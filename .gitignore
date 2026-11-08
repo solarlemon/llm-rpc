@@ -1,0 +1,63 @@
+# CMake build directories and generated configuration
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# Executables in bin; retain the example configuration
+/bin/*
+!/bin/test.conf
+
+# Compiled objects, libraries, and debug files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.pdb
+*.d
+
+# Runtime logs, profiling, coverage, and crash dumps
+*.log
+*.log.*
+*.INFO*
+*.WARNING*
+*.ERROR*
+*.FATAL*
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.gcov
+core
+core.[0-9]*
+
+# Local editor settings and temporary files
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Local environment secrets; retain example templates
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Keep .proto and generated .pb.h/.pb.cc files:
+# the current CMake build uses the checked-in generated code directly.
