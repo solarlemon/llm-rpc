@@ -1,6 +1,6 @@
 syntax="proto3";
 
-package llm_rpc.example;
+package llm_rpc.example; // 在c++中相当于命名空间，在多人开发下保证命名不会冲突。
 
 option cc_generic_services=true;
 
@@ -16,6 +16,7 @@ message LoginResponse{
     ResultCode result=1;
     bool success=2;
 }
+
 message RegisterRequest{
     uint32 id=1;
     bytes name=2;
@@ -25,7 +26,9 @@ message RegisterResponse{
     ResultCode result=1;
     bool success=2;
 }
+
+// 服务定义（RPC 接口）
 service UserServiceRpc{
-    rpc Login(LoginRequest) returns(LoginResponse);
-    rpc Register(RegisterRequest) returns(RegisterResponse);
+    rpc Login(LoginRequest) returns(LoginResponse); // 登录 RPC 方法
+    rpc Register(RegisterRequest) returns(RegisterResponse); // 注册 RPC 方法
 }
