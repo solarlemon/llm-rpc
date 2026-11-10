@@ -6,46 +6,45 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
-#include "lock_free_queue.h" // 引用之前写的无锁队列
+#include "lock_free_queue.h"      // MPMCQueue：多生产者多消费者无锁队列
 
-namespace llm_rpc {
-
-struct ConnectionBucket
+namespace llm_rpc
 {
-    // 使用无锁队列存放空闲的 fd
-    std::unique_ptr<MPMCQueue<int>> free_fds;
-    // 记录该地址当前已建立的连接总数（包括正在使用的和空闲的）
-    std::atomic<int> active_count; 
+    // ConnectionBucket：每个目标地址（ip:port）对应一个桶
+    // 存放该地址的所有空闲 fd + 连接总数
+    struct ConnectionBucket
+    {
+        // 空闲 fd 队列：多线程并发 push/pop 无锁
+        std::unique_ptr<MPMCQueue<int>> free_fds;
 
-    ConnectionBucket(size_t capacity) 
-        : free_fds(new MPMCQueue<int>(capacity)), active_count(0) {}
-};
+        // 该地址已建立的连接总数（空闲 + 正在使用）
+        // 用于限制总连接数，防止把服务端打爆
+        std::atomic<int> active_count;
 
-class RpcConnectionPool
-{
-public:
-    static RpcConnectionPool &GetInstance();
+        ConnectionBucket(size_t capacity)
+            : free_fds(new MPMCQueue<int>(capacity)), active_count(0) {}
+    };
 
-    // 借用连接
-    int BorrowConnection(const std::string &ip, uint16_t port);
+    // RpcConnectionPool：连接池单例
+    class RpcConnectionPool
+    {
+    public:
+        static RpcConnectionPool &GetInstance();     // 单例（C++11 magic static）
 
-    // 归还连接
-    void ReturnConnection(const std::string &ip, uint16_t port, int fd, bool is_bad = false);
+        int  BorrowConnection(const std::string &ip, uint16_t port);   // 借连接
+        void ReturnConnection(const std::string &ip, uint16_t port,
+                              int fd, bool is_bad = false);            // 还连接
+        void WarmUp(const std::string &ip, uint16_t port, int count);  // 预热
 
-    // 预热连接
-    void WarmUp(const std::string &ip, uint16_t port, int count);
+    private:
+        RpcConnectionPool();
+        ~RpcConnectionPool();                        // 析构：关闭所有 fd，释放 bucket
 
-private:
-    RpcConnectionPool();
-    ~RpcConnectionPool();
+        int m_max_conn_per_node;                     // 每地址连接上限（1024）
+        std::unordered_map<std::string, ConnectionBucket *> m_pools;  // "ip:port" → bucket
+        std::mutex m_global_mtx;                     // 只保护 m_pools 的查找/插入
+    };
 
-    int m_max_conn_per_node;
-    // 全局 Bucket 映射表
-    std::unordered_map<std::string, ConnectionBucket *> m_pools;
-    std::mutex m_global_mtx; // 仅用于创建新 Bucket 时加锁
-};
-
-
-}  // namespace llm_rpc
+} // namespace llm_rpc
 
 #endif
