@@ -1,30 +1,32 @@
 #ifndef LLM_RPC_ZOOKEEPER_CLIENT_H
 #define LLM_RPC_ZOOKEEPER_CLIENT_H
 
-#include<semaphore.h>
-#include<zookeeper/zookeeper.h>
+#include <semaphore.h>
+#include <zookeeper/zookeeper.h>
 #include <vector>
 #include <string>
 
-namespace llm_rpc {
-//封装的zk客户端
-class ZkClient
+namespace llm_rpc
 {
-public:
-    ZkClient();
-    ~ZkClient();
-    //zkclient启动连接zkserver
-    void Start();
-    //在zkserver中创建一个节点，根据指定的path
-    void Create(const char* path,const char* data,int datalen,int state=0);
-    //根据参数指定的znode节点路径，或者znode节点值
-    std::string GetData(const char* path);
-    std::vector<std::string> GetChildren(const char* path, watcher_fn fn, void* cbContext);
-private:
-    //Zk的客户端句柄
-    zhandle_t* m_zhandle;
-};
+    // 封装的zk客户端
+    class ZkClient
+    {
+    public:
+        ZkClient();
+        ~ZkClient();
+        // zkclient启动连接zkserver
+        void Start();
+        // 在zkserver中创建一个节点，根据指定的path
+        void Create(const char *path, const char *data, int datalen, int state = 0);
+        // 根据参数指定的znode节点路径，或者znode节点值
+        std::string GetData(const char *path);
+        std::vector<std::string> GetChildren(const char *path, watcher_fn fn, void *cbContext);
 
-}  // namespace llm_rpc
+    private:
+        // Zk的客户端句柄
+        zhandle_t *m_zhandle;
+    };
+
+} // namespace llm_rpc
 
 #endif
