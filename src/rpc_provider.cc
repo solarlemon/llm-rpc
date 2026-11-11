@@ -215,6 +215,7 @@ namespace llm_rpc
             google::protobuf::Message *response = service->GetResponsePrototype(method).New();
 
             // ---- 步骤 8：创建 done 闭包，业务处理完后触发回包 ----
+            // 业务代码末尾 done->Run();  所以最后会调用 SendRpcResponse(conn, response, request) 写回客户端
             // 捕获 conn / response / request，等 CallMethod 完成后发响应并释放资源
             google::protobuf::Closure *done = new RpcClosure(
                 [this, conn, response, request]()
