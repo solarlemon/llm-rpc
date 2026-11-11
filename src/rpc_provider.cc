@@ -2,6 +2,7 @@
 #include "rpc_application.h" // 全局配置
 #include "rpc_header.pb.h"   // RpcHeader 协议头
 #include "rpc_logger.h"
+#include "rpc_transport.h"
 #include <iostream>
 
 namespace llm_rpc
@@ -64,7 +65,7 @@ namespace llm_rpc
     // ------------------------------------------------------------
     // 步骤：读配置 → 建 TcpServer → 设回调 → 起线程池 → 注册 ZK → loop
     // ============================================================
-    void RpcProvider::Run()
+    void RpcProvider::Run(int workers)
     {
         // 1. 从配置文件读 IP / Port
         std::string ip = RpcApplication::GetInstance().GetConfig().Load("rpcserverip");
@@ -85,11 +86,7 @@ namespace llm_rpc
         // 4. IO 线程数：4 个负责收发字节流
         server->setThreadNum(4);
 
-        // 5. 业务线程池：100 线程执行业务逻辑
-        //    与 IO 线程分离，避免慢业务阻塞网络收发
-        m_thread_pool.start(100);
-
-        // 6. 连接 ZooKeeper，注册服务供客户端发现
+        // 5. 连接 ZooKeeper，注册服务供客户端发现
         ZkClient zkclient;
         zkclient.Start();
 
@@ -110,9 +107,11 @@ namespace llm_rpc
         std::cout << "RpcProvider start service at ip:" << ip
                   << " port:" << port << std::endl;
 
-        // 7. 启动服务器 + 进入事件循环（阻塞）
+        // 6. 启动服务器 + 进入事件循环（阻塞）
+        m_thread_pool.start(workers);
         server->start();
         event_loop.loop();
+        m_thread_pool.stop();
     }
 
     // ============================================================
@@ -147,6 +146,12 @@ namespace llm_rpc
             std::memcpy(&total_len, buffer->peek(), 4);
             total_len = ntohl(total_len);
 
+            if (total_len < 5 || total_len > rpc_max_frame)
+            {
+                // 非法长度：小于 5（至少要有 header_len + 1 字节 args）或大于最大帧限制
+                conn->forceClose();
+                return;
+            }
             // 半包保护：还没收满一整个请求，等下次数据到来
             // readableBytes 必须 >= 4(自身) + total_len
             if (buffer->readableBytes() < 4 + total_len)
@@ -161,6 +166,12 @@ namespace llm_rpc
             const char *data_ptr = buffer->peek();
             std::memcpy(&header_len, data_ptr, 4);
             header_len = ntohl(header_len);
+            if (!header_len || header_len > rpc_max_header || header_len > total_len - 4)
+            {
+                // 非法 header_len：0 或大于最大限制，或大于 total_len - 4（剩余长度不足）
+                conn->forceClose();
+                return;
+            }
             buffer->retrieve(4); // 消耗掉 header_len 字段
 
             // ---- 步骤 3：切出 RpcHeader 并反序列化 ----
@@ -175,10 +186,11 @@ namespace llm_rpc
             buffer->retrieve(args_size);
 
             // ---- 步骤 5：解析协议头 ----
-            if (!rpc_header.ParseFromString(rpc_header_str))
+            if (!rpc_header.ParseFromString(rpc_header_str) || rpc_header.args_size() != args_size)
             {
                 std::cout << "header parse error" << std::endl;
-                return; // 协议头坏 → 无法继续解析，退出（可考虑关连接）
+                conn->forceClose();
+                return;
             }
 
             std::string service_name = rpc_header.service_name();
@@ -189,6 +201,7 @@ namespace llm_rpc
             if (it == service_map.end())
             {
                 std::cout << service_name << " is not exist!" << std::endl;
+                conn->forceClose();
                 return;
             }
             // 再查 method_map 找方法描述符
@@ -196,6 +209,7 @@ namespace llm_rpc
             if (mit == it->second.method_map.end())
             {
                 std::cout << service_name << "." << method_name << " is not exist!" << std::endl;
+                conn->forceClose();
                 return;
             }
 
@@ -208,6 +222,15 @@ namespace llm_rpc
             if (!request->ParseFromString(args_str))
             {
                 delete request;
+                conn->forceClose();
+                return;
+            }
+
+            if (pending_.fetch_add(1) >= 256)
+            {
+                pending_.fetch_sub(1);
+                delete request;
+                conn->forceClose();
                 return;
             }
 
@@ -220,7 +243,8 @@ namespace llm_rpc
             google::protobuf::Closure *done = new RpcClosure(
                 [this, conn, response, request]()
                 {
-                    this->SendRpcResponse(conn, response, request); // 写回客户端
+                    this->SendRpcResponse(conn, response, request);
+                    pending_.fetch_sub(1);
                 });
 
             // ---- 步骤 9：丢到线程池执行业务逻辑 ----
@@ -243,7 +267,7 @@ namespace llm_rpc
                                       google::protobuf::Message *request)
     {
         std::string response_str;
-        if (response->SerializeToString(&response_str))
+        if (response->ByteSizeLong() <= rpc_max_frame && response->SerializeToString(&response_str))
         {
             uint32_t len = response_str.size();
             uint32_t net_len = htonl(len);
@@ -261,7 +285,8 @@ namespace llm_rpc
         }
         else
         {
-            LOG(ERROR) << "serialize response error!";
+            LOG(ERROR) << "RPC response serialization failed or exceeds frame limit";
+            conn->forceClose();
         }
 
         // 释放本次请求的堆对象（谁 New 谁 Delete）
