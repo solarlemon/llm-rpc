@@ -1,0 +1,31 @@
+syntax = "proto3";
+package llm_rpc.inference;
+option cc_generic_services = true;
+
+message PrefillRequest {
+  uint32 request_id = 1;
+  repeated int32 prompt = 2;
+  uint32 timeout_ms = 3;
+}
+message PrefillReply {
+  uint32 request_id = 1;
+  bytes snapshot = 2;
+  string error = 3;
+}
+
+message DecodeRequest {
+  uint32 request_id = 1;
+  bytes snapshot = 2;
+  uint32 max_tokens = 3;
+  uint32 timeout_ms = 4;
+}
+message DecodeReply {
+  uint32 request_id = 1;
+  repeated int32 tokens = 2;
+  string finish_reason = 3;
+  uint32 prompt_forward_tokens = 4;
+  string error = 5;
+  uint32 decode_forward_calls = 6;
+}
+service PrefillService { rpc RunPrefill(PrefillRequest) returns (PrefillReply); }
+service DecodeService { rpc RunDecode(DecodeRequest) returns (DecodeReply); }
