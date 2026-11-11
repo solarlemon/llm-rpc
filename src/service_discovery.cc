@@ -76,7 +76,7 @@ namespace llm_rpc
                 sd->m_zkClient.GetChildren(path_str.c_str(), WatcherCallback, sd);
             //                                              ↑ 重新注册 watcher（一次性，必须重注册）
 
-            // 拿到数据后，再加写锁更新内存结构
+            // 通过 ZK 拿到数据后，再加写锁更新内存结构
             std::unique_lock<std::shared_timed_mutex> lock(sd->m_rw_mtx);
             if (sd->m_chash_map.find(service_name) != sd->m_chash_map.end())
             {
