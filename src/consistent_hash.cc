@@ -295,7 +295,7 @@ namespace llm_rpc
     {
         for (int i = 0; i < replicas; ++i)
         {
-            // 虚拟节点名：node#0, node#1, ..., node#replicas-1
+            // 构建虚拟节点名：node#0, node#1, ..., node#replicas-1
             std::string virtual_name = node + "#" + std::to_string(i);
             uint32_t h = hash_func(virtual_name);
 
@@ -390,12 +390,15 @@ namespace llm_rpc
             counter_ptr = m_node_counts[node]; // 5. 拿出原子计数指针（锁外使用）
         } // ← 读锁在此释放
 
+        // 因为后台需要知道每个节点处理的请求数，所以我们在这里累加计数。注意：这里是线程局部变量，避免频繁原子操作。
         // 采样计数：每 100 次请求累加一次，降低原子操作开销
         thread_local int sample_counter = 0;
         if (++sample_counter >= 100)
         {
+            // 每个线程都有自己独立的一个 sample_counter
+            // 只有当它累积到 100 时，才去更新原子计数器，降低原子操作的开销。
             if (counter_ptr)
-                counter_ptr->fetch_add(100, std::memory_order_relaxed);
+                counter_ptr->fetch_add(100, std::memory_order_relaxed); // memory_order_relaxed 表示不需要管指令重排，只保证原子就行
             m_total_requests.fetch_add(100, std::memory_order_relaxed);
             sample_counter = 0;
         }
