@@ -1,7 +1,8 @@
 #ifndef LLM_RPC_ZOOKEEPER_CLIENT_H
 #define LLM_RPC_ZOOKEEPER_CLIENT_H
 
-#include <semaphore.h>
+#include <condition_variable>
+#include <mutex>
 #include <zookeeper/zookeeper.h>
 #include <vector>
 #include <string>
@@ -24,7 +25,12 @@ namespace llm_rpc
 
     private:
         // Zk的客户端句柄
+        static void WatchSession(zhandle_t *, int type, int state, const char *, void *context);
         zhandle_t *m_zhandle;
+        // 标志位、互斥锁、条件变量都是成员变量，防止同一个进程中多个zkclient实例之间的干扰
+        std::mutex session_mutex_;
+        std::condition_variable session_changed_;
+        bool connected_ = false;
     };
 
 } // namespace llm_rpc

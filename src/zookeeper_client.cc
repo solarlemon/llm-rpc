@@ -2,36 +2,22 @@
 #include "rpc_application.h" // 读配置（zookeeperip / zookeeperport）
 #include <mutex>
 #include "rpc_logger.h"
-#include <condition_variable>
+#include <chrono>
+#include <stdexcept>
 
 namespace llm_rpc
 {
 
-    // 全局同步原语：用于 Start() 阻塞等待"ZK 会话连接成功"
-    // ------------------------------------------------------------
-    // zookeeper_init 是异步的：函数返回时只是拿到了 handle，
-    // 真正的 TCP 连接 + 会话建立是在 ZK 客户端后台线程里完成的。
-    // 连接成功后 ZK 会回调 global_watcher，watcher 里置位 + 唤醒。
-    std::mutex cv_mutex;
-    std::condition_variable cv;
-    bool is_connected = false; // 标志：ZK 会话是否已连接成功
-
-    // 全局 watcher：ZK 事件通知回调
-    // ------------------------------------------------------------
-    // 由 ZK 客户端线程调用，不能阻塞太久。
-    // 这里只关心"会话事件 + 连接成功"，置标志并唤醒 Start()。
-    void global_watcher(zhandle_t *zh, int type, int status,
-                        const char *path, void *watcherCtx)
+    void ZkClient::WatchSession(zhandle_t *, int type, int state, const char *, void *context)
     {
-        if (type == ZOO_SESSION_EVENT)
-        { // 会话级事件（连接/断开/过期）
-            if (status == ZOO_CONNECTED_STATE)
-            { // 连接成功
-                std::lock_guard<std::mutex> lock(cv_mutex);
-                is_connected = true;
-            }
+        if (type != ZOO_SESSION_EVENT)
+            return;
+        auto &client = *static_cast<ZkClient *>(context);
+        {
+            std::lock_guard<std::mutex> lock(client.session_mutex_);
+            client.connected_ = state == ZOO_CONNECTED_STATE;
         }
-        cv.notify_all(); // 唤醒等待者（Start 里的 cv.wait）
+        client.session_changed_.notify_all();
     }
 
     // 构造 / 析构
@@ -56,20 +42,20 @@ namespace llm_rpc
         std::string port = RpcApplication::GetInstance().GetConfig().Load("zookeeperport");
         std::string connstr = host + ":" + port;
 
-        // session_timeout = 6000ms；watcher = global_watcher
-        m_zhandle = zookeeper_init(connstr.c_str(), global_watcher, 6000,
-                                   nullptr, nullptr, 0);
-        if (nullptr == m_zhandle)
-        {
-            LOG(ERROR) << "zookeeper_init error";
-            exit(EXIT_FAILURE); // 连接参数错，直接退出
-        }
+        m_zhandle = zookeeper_init(connstr.c_str(), WatchSession, 6000, nullptr, this, 0);
+        if (!m_zhandle)
+            throw std::runtime_error("zookeeper_init failed");
 
-        // 阻塞等待 global_watcher 置 is_connected = true
-        // 谓词方式（cv.wait(lock, pred)）自动处理虚假唤醒，因为zookeeper_init 立刻返回 zhandle_t*，此时 TCP 连接还没建立。
-        std::unique_lock<std::mutex> lock(cv_mutex);
-        cv.wait(lock, []
-                { return is_connected; });
+        std::unique_lock<std::mutex> lock(session_mutex_);
+        if (!session_changed_.wait_for(lock, std::chrono::seconds(2), [this]
+                                       { return connected_; }))
+        {
+            // 超时保护
+            lock.unlock();
+            zookeeper_close(m_zhandle);
+            m_zhandle = nullptr;
+            throw std::runtime_error("ZooKeeper connection deadline exceeded");
+        }
         LOG(INFO) << "zookeeper_init success";
     }
 
