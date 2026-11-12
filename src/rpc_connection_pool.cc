@@ -1,6 +1,7 @@
 #include "rpc_connection_pool.h"
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include "rpc_logger.h"
 
 namespace llm_rpc
@@ -99,8 +100,10 @@ namespace llm_rpc
                   << " connections ready for " << key;
     }
 
-    int RpcConnectionPool::BorrowConnection(const std::string &ip, uint16_t port)
+    int RpcConnectionPool::BorrowConnection(const std::string &ip, uint16_t port, RpcDeadline deadline)
     {
+        if (std::chrono::steady_clock::now() >= deadline)
+            return -1;
         std::string key = ip + ":" + std::to_string(port);
 
         // ---- 1. 找 bucket（短临界区）----
@@ -133,25 +136,32 @@ namespace llm_rpc
             // fetch_add 返回旧值：旧值 < 上限 才算抢到名额
             if (bucket->active_count.fetch_add(1) < m_max_conn_per_node)
             {
-                fd = socket(AF_INET, SOCK_STREAM, 0);
-                int opt = 1;
-                setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-                struct sockaddr_in addr;
-                addr.sin_family = AF_INET;
-                addr.sin_port = htons(port);
-                addr.sin_addr.s_addr = inet_addr(ip.c_str());
-
-                if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0)
+                fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+                if (fd >= 0)
                 {
-                    return fd; // 新建成功，直接返回（不回队列）
-                }
-                else
-                {
+                    // 设置 TCP_NODELAY 禁用 Nagle 算法，减少延迟
+                    int option = 1;
+                    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &option, sizeof(option));
+                    sockaddr_in address{};
+                    address.sin_family = AF_INET;
+                    address.sin_port = htons(port);
+                    if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) == 1)
+                    {
+                        const int result = connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+                        if (result == 0)
+                            return fd;
+                        if (errno == EINPROGRESS && WaitSocket(fd, POLLOUT, deadline))
+                        {
+                            int error = 0;
+                            socklen_t length = sizeof(error);
+                            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0)
+                                return fd;
+                        }
+                    }
                     close(fd);
-                    bucket->active_count.fetch_sub(1); // 建连失败，回滚名额
-                    return -1;
                 }
+                bucket->active_count.fetch_sub(1);
+                return -1;
             }
             else
             {
