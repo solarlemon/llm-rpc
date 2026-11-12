@@ -368,7 +368,7 @@ namespace llm_rpc
         }
         // 4. 重新排序，恢复哈希环
         std::sort(m_keys.begin(), m_keys.end());
-        std::cout << "[ConsistentHash] 节点列表已全量更新，共计 " << nodes.size() << " 个节点。" << std::endl;
+        std::clog << "[ConsistentHash] 节点列表已全量更新，共计 " << nodes.size() << " 个节点。" << std::endl;
     }
 
     std::string ConsistentHash::GetTargetNode(const std::string &key)
