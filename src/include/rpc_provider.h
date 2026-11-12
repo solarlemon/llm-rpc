@@ -9,6 +9,7 @@
 #include <muduo/base/ThreadPool.h> // 【修改点1】：引入muduo线程池头文件
 #include <google/protobuf/descriptor.h>
 #include <functional>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 
@@ -19,12 +20,13 @@ class RpcProvider
 public:
     void NotifyService(google::protobuf::Service* service);
     ~RpcProvider();
-    void Run();
+    void Run(int workers = 100);
 private:
     muduo::net::EventLoop event_loop;
     
 
-    muduo::ThreadPool m_thread_pool; 
+    muduo::ThreadPool m_thread_pool;
+    std::atomic<unsigned> pending_{0};
 
     struct ServiceInfo
     {

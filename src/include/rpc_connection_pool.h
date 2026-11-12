@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
+#include "rpc_transport.h"
 #include "lock_free_queue.h"      // MPMCQueue：多生产者多消费者无锁队列
 
 namespace llm_rpc
@@ -31,7 +32,8 @@ namespace llm_rpc
     public:
         static RpcConnectionPool &GetInstance();     // 单例（C++11 magic static）
 
-        int  BorrowConnection(const std::string &ip, uint16_t port);   // 借连接
+        int  BorrowConnection(const std::string &ip, uint16_t port,
+            RpcDeadline deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10));   // 借连接
         void ReturnConnection(const std::string &ip, uint16_t port,
                               int fd, bool is_bad = false);            // 还连接
         void WarmUp(const std::string &ip, uint16_t port, int count);  // 预热

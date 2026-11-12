@@ -2,7 +2,7 @@
 #define LLM_RPC_RPC_CHANNEL_H
 
 #include <google/protobuf/service.h>
-#include <unistd.h>
+#include <chrono>
 #include "service_discovery.h"
 
 namespace llm_rpc {
@@ -11,7 +11,8 @@ class RpcChannel : public google::protobuf::RpcChannel
 {
 public:
 
-    RpcChannel(bool connectNow = false) {} 
+    explicit RpcChannel(bool = false,
+        std::chrono::milliseconds timeout = std::chrono::seconds(10)) : timeout_(timeout) {}
     
     // 【关键修改点】：析构函数也直接实现
     virtual ~RpcChannel() override {}
@@ -23,8 +24,7 @@ public:
                     ::google::protobuf::Closure *done) override;
 
 private:
-    // 内部辅助函数声明
-    ssize_t recv_exact(int fd, char *buf, size_t size);
+    std::chrono::milliseconds timeout_;
 };
 
 
