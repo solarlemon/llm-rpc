@@ -80,11 +80,15 @@ namespace
                 KVCache cache(model_.cache_shape());
                 const auto logits = model_.prefill(prompt, cache, 8, cancelled);
                 
-                // 4. 采样出首 Token
+                // 4. 贪心算法采样出首 Token
+                // 例如用户输入的 prompt 是 "Hello", 模型输出的 logits 是一个长度为 vocab_size 的向量，表示下一个 token 的概率分布。
+                // 我们使用贪心算法选择概率最高的 token 作为首个生成 token。
                 const auto first_token = Model::greedy(logits);
                 
                 // 5. 把整个 KV Cache 序列化成二进制快照（限制最大包长 rpc_max_frame - 4096）
-                // 并把快照直接塞进 RPC 的 reply 里！
+                // 模型对象：获取模型指纹，确保DecodeWorker能正确加载相同模型；
+                // KVCache对象：包含所有层的key/value缓存；first_token：首个生成token；request_id：用于请求追踪。
+                // 预留 4096 字节给 RPC 协议头和其他字段，避免超过最大帧长度。
                 reply->set_snapshot(KVSnapshot::encode(model_, cache, first_token,
                                                       request->request_id(), rpc_max_frame - 4096));
                 reply->set_request_id(request->request_id()); });
@@ -137,7 +141,6 @@ namespace
     };
 
 }
-
 
 int main(int argc, char **argv)
 {

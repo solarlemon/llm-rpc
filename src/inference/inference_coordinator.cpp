@@ -81,6 +81,7 @@ int main(int argc, char **argv)
 
         // ★ 关键设计：直接创建带超时时间的 Channel，实现 RPC 层的超时控制
         RpcChannel prefill_channel(false, prefill_budget);
+        // 创建 Prefill 服务的 Stub，Stub中已经绑定了对应的服务
         PrefillService::Stub prefill_stub(&prefill_channel);
         PrefillReply snapshot;
         RpcController controller;
