@@ -27,16 +27,21 @@ namespace llm_rpc
             Generation result{{}, {}, maximum ? "length" : "prefill_only", 0};
             for (int i = 0; i < maximum; ++i)
             {
-                if (next == 2) // stories260K EOS.
+                // 出于资源的考虑，限制最多生成 maximum 个 token，或遇到 EOS/取消时提前结束
+                if (next == 2) // stories260K 中一般表示 EOS.
                 {
                     result.reason = "eos";
                     break;
                 }
                 if (cancelled && cancelled())
+                    // 超时熔断 
                     throw std::runtime_error("inference deadline exceeded");
+                // 核心：把当前词喂给模型，结合之前的 KV Cache，算出下一个词的概率分布
+                // 包括前一轮计算的 KV Cache，例如 prompt "你好" 的 KV Cache，和当前 token "世"
                 result.tokens.push_back(next);
                 if (i + 1 < maximum)
                 {
+                    // 核心：把当前词喂给模型，结合之前的 KV Cache，算出下一个词的概率分布
                     result.last_decode_logits = model.decode(next, cache, cancelled);
                     ++result.decode_calls;
                     next = Model::greedy(result.last_decode_logits);
