@@ -39,12 +39,12 @@ namespace llm_rpc
             }
 
             // RMSNorm：x * (1/sqrt(mean(x²)+eps)) * weight
-            std::vector<float> norm(const std::vector<float> &x, const std::vector<float> &weight)
+            std::vector<float> norm(const std::vector<float> &x, const std::vector<float> &weight, float epsilon)
             {
                 float sum = 0;
                 for (float v : x)
                     sum += v * v;
-                const float scale = 1.0f / std::sqrt(sum / static_cast<float>(x.size()) + 1e-5f);
+                const float scale = 1.0f / std::sqrt(sum / static_cast<float>(x.size()) + epsilon);
                 auto out = x;
                 for (std::size_t i = 0; i < x.size(); ++i)
                     out[i] = x[i] * scale * weight[i];
@@ -59,16 +59,20 @@ namespace llm_rpc
             }
 
             // RoPE：两两配对旋转；频率按 (i % head_dim)/head_dim 计算
-            void rope(std::vector<float> &x, std::size_t position, int head_dim)
+            void rope(std::vector<float> &x, std::size_t position, int head_dim, bool qwen)
             {
-                for (std::size_t i = 0; i < x.size(); i += 2)
-                {
-                    const float frequency = 1.0f / std::pow(10000.0f, static_cast<float>(i % head_dim) / head_dim);
-                    const float angle = static_cast<float>(position) * frequency;
-                    const float a = x[i], b = x[i + 1];
-                    x[i] = a * std::cos(angle) - b * std::sin(angle);
-                    x[i + 1] = a * std::sin(angle) + b * std::cos(angle);
-                }
+                for (std::size_t head = 0; head < x.size(); head += head_dim)
+                    for (int pair = 0; pair < head_dim / 2; ++pair)
+                    {
+                        const auto left = head + (qwen ? pair : 2 * pair);
+                        const auto right = left + (qwen ? head_dim / 2 : 1);
+                        const auto frequency = 1.0f / std::pow(qwen ? 1000000.0f : 10000.0f,
+                                                               2.0f * pair / head_dim);
+                        const auto angle = static_cast<float>(position) * frequency;
+                        const auto a = x[left], b = x[right];
+                        x[left] = a * std::cos(angle) - b * std::sin(angle);
+                        x[right] = a * std::sin(angle) + b * std::cos(angle);
+                    }
             }
         }
 
@@ -79,6 +83,14 @@ namespace llm_rpc
             const std::uint32_t endian_probe = 1;
             if (*reinterpret_cast<const unsigned char *>(&endian_probe) != 1)
                 throw std::runtime_error("mini checkpoint requires little-endian host");
+
+            const std::string extension = ".safetensors";
+            if (checkpoint.size() >= extension.size() &&
+                checkpoint.compare(checkpoint.size() - extension.size(), extension.size(), extension) == 0)
+            {
+                load_qwen(checkpoint);
+                return;
+            }
 
             // 打开并取大小
             std::ifstream input(checkpoint, std::ios::binary | std::ios::ate);
@@ -170,7 +182,8 @@ namespace llm_rpc
             // 文件里的两份 RoPE 频率表跳过（前向实时计算）
             take(static_cast<std::size_t>(c.capacity) * (d / c.heads));
             // classifier：共享则复用 embedding_，否则单独读
-            classifier_ = shared ? embedding_ : take(static_cast<std::size_t>(c.vocab) * d);
+            if (!shared)
+                classifier_ = take(static_cast<std::size_t>(c.vocab) * d);
             if (offset != data.size())
                 throw std::runtime_error("unexpected mini checkpoint trailing data");
         }
@@ -220,15 +233,22 @@ namespace llm_rpc
                 {
                     check_cancel(cancel); // 逐层检查取消
                     const auto &weights = layers_[layer];
+                    const float epsilon = qwen_ ? 1e-6f : 1e-5f;
 
                     // ---- attention 子层 ----
-                    auto normalized = norm(x, weights.attention_norm);
+                    auto normalized = norm(x, weights.attention_norm, epsilon);
                     // QKV 投影：q = W_q · normalized（d 维）、k/v = W_k/W_v · normalized（kv_dim 维）
                     auto q = matvec(weights.q, normalized, d);      // d 维
                     auto k = matvec(weights.k, normalized, kv_dim); // kv_dim 维
                     auto v = matvec(weights.v, normalized, kv_dim);
-                    rope(q, position, head_dim);
-                    rope(k, position, head_dim); // v 不做 RoPE
+                    if (qwen_)
+                    {
+                        residual(q, weights.q_bias);
+                        residual(k, weights.k_bias);
+                        residual(v, weights.v_bias);
+                    }
+                    rope(q, position, head_dim, qwen_);
+                    rope(k, position, head_dim, qwen_); // v 不做 RoPE
 
                     // 写入当前层当前位置的 K/V（提交前该层可读）
                     cache.write_layer(layer, k, v);
@@ -266,7 +286,7 @@ namespace llm_rpc
                     residual(x, matvec(weights.projection, attention, d));
 
                     // ---- SwiGLU FFN 子层 ----
-                    normalized = norm(x, weights.ffn_norm);
+                    normalized = norm(x, weights.ffn_norm, epsilon);
                     auto gate = matvec(weights.gate, normalized, config_.hidden_dim);
                     auto up = matvec(weights.up, normalized, config_.hidden_dim);
                     for (std::size_t i = 0; i < gate.size(); ++i)
@@ -275,7 +295,8 @@ namespace llm_rpc
                 }
 
                 // 最终 norm + 分类器 → logits
-                auto logits = matvec(classifier_, norm(x, final_norm_), config_.vocab);
+                auto logits = matvec(classifier_.empty() ? embedding_ : classifier_,
+                                     norm(x, final_norm_, qwen_ ? 1e-6f : 1e-5f), config_.vocab);
                 check_cancel(cancel);
                 // 所有层与最终输出都成功，才提交本 token
                 cache.commit_token();

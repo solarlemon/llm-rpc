@@ -29,6 +29,7 @@ namespace llm_rpc
         // 单层权重（Llama pre-norm 结构）
         struct Layer
         {
+            std::vector<float> q_bias, k_bias, v_bias;
             std::vector<float> attention_norm, q, k, v, projection; // attention 子层
             std::vector<float> ffn_norm, gate, down, up;            // SwiGLU FFN 子层
         };
@@ -45,6 +46,12 @@ namespace llm_rpc
             const Config &config() const noexcept { return config_; }
 
             std::uint64_t fingerprint() const noexcept { return fingerprint_; }
+
+            bool uses_qwen() const noexcept { return qwen_; }
+            bool is_eos(TokenId id) const noexcept
+            {
+                return qwen_ ? id == 151645 || id == 151643 : id == 2;
+            }
 
             // 由 Config 推导 KVShape{layers, capacity, kv_heads, dim/heads}
             KVShape cache_shape() const noexcept;
@@ -72,6 +79,8 @@ namespace llm_rpc
             void validate_cache(const KVCache &cache) const;
 
             // ---- 只读权重 ----
+            void load_qwen(const std::string &checkpoint);
+            bool qwen_ = false;
             std::uint64_t fingerprint_ = 0;
             Config config_{};                                        // 超参
             std::vector<float> embedding_, final_norm_, classifier_; // 嵌入表/最终 norm/输出投影
