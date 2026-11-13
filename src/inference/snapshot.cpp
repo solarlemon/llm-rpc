@@ -199,16 +199,20 @@ namespace llm_rpc
 
             // 5. 分配内存并读入浮点数
             auto cache = std::make_unique<KVCache>(shape);
-            const auto elements = positions * cache->layer_width_;
+            const auto elements = positions * cache->layer_width_; // 计算每一个 layer 内部的有效元素个数（positions * 每层宽度）
             for (std::size_t layer = 0; layer < shape.layers; ++layer)
                 for (auto *buffer : {&cache->keys_, &cache->values_})
                     for (std::size_t index = 0; index < elements; ++index)
                     {
+                        // A. 从二进制流中读出 4 个字节的 uint32_t
                         const auto bits = static_cast<std::uint32_t>(get(in));
+                        // B. 通过 memcpy 把位模式无损转回 float
                         float value;
                         std::memcpy(&value, &bits, sizeof(value));
+                        // C. 安全校验：防止 NaN（非数字）或 Inf（无穷大）污染模型计算
                         if (!std::isfinite(value))
                             throw std::runtime_error("nonfinite KV value");
+                        // D. 按照 [layer][position][kv_head][head_dim] 的扁平化布局，将数据填入内存
                         (*buffer)[layer * cache->layer_stride_ + index] = value;
                     }
             if (in.peek() != std::char_traits<char>::eof())
