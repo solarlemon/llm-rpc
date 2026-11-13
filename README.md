@@ -1,131 +1,87 @@
 # LLM-RPC
 
-> **本项目目前只在[知识星球](https://programmercarl.com/other/kstar.html)答疑并维护**。
+LLM-RPC 是一个 C++14 CPU 推理与 RPC 学习项目，支持 **Qwen2.5-0.5B-Instruct 中文单轮问答**。Prefill 和 Decode 由两个独立进程执行，协调器通过 TCP RPC 传递请求内 KV 快照。Decode 恢复缓存后继续生成，无需重算 prompt。
 
-本项目如果是有C++语法基础的录友，且做过[知识星球](https://programmercarl.com/other/kstar.html)的：[基于Raft共识算法的KV数据库](https://programmercarl.com/other/project_fenbushi.html)，[协程库](https://programmercarl.com/other/project_coroutine.html)，那大家上手这个项目的时间会非常快：
+## 系统架构
 
-学习时间：一天只需要抽3-4个小时，看3天左右基本能看完整个项目。
-
-如果你还是新手，很多理论知识还要从头学习，如果一天学6-8小时，大概需要两周基本能完成这个RPC项目。
-
-## 做完本项目你讲收获
-
-* 深入理解RPC框架原理与分布式系统设计
-* 夯实C++面向对象、STL、设计模式核心功底
-* 掌握Socket、TCP/UDP及高并发I/O模型（epoll）
-* 基于Muduo库实现Reactor网络模型，解耦业务与通信
-* 熟练使用Protobuf定义消息、实现高效序列化/反序列化
-* 设计自定义协议，解决TCP粘包/拆包问题
-* 集成Zookeeper作为注册中心，实现服务注册与发现
-* 运用Watcher机制动态感知服务状态，保障高可用
-* 从0到1打造高性能RPC框架，获得分布式系统开发经验
-* 提升解决复杂工程问题（协议设计、高并发、解耦）的能力
-
-## 为什么要做c++版的rpc？
-
-1.高性能需求
-
-c++以其高效的内存管理和底层控制能力，成为性能要求比较高的系统(如金融、游戏服务器、实时通信系统)的首选语言。
-
-在这些场景下，RPC框架需要尽可能减少通信开销，而C++天生的性能优势可以满足这一需要求。
-
-
-2.系统级开发
-
-很多底层基础设施(如数据库、中间件、分布式存储系统)都是用c++开发。
-
-这些系统需要一个与语言无缝结合的高效RPC框架，避免因语言间的切换导致性能损耗
-
-
-3.跨平台
-
-C++的可移植性在不同平台(如linux、Windows、嵌入式系统)上广泛使用。
-
-一个C++RPC框架能够为这些多平台环境提供统一的通信接口，降低开发成本。
-
-4.灵活性与可扩展性
-
-与某些语言的封闭生态不同，C++允许开发者灵活地调整底层实现。例如：可以定制序列化协议(如Protobuf、Thrift)、网络传输方式(如TCP、UDP、QUIC)等，以满足不同场景的需求。
-
-关于C++版RPC框架的使用场景：
-
-* 微服务架构：在微服务架构中，服务通常分布在不同的网络和不同的服务器上，此时就需要一个高效的通信手段就是我们的rpc。
-* 实时通信：如在线游戏、视频直播、即时通信等场景，要求低延迟和高吞吐。C++RPC可以通过优化网络传输协议和序列化协议，提供实时性保障。
-* 分布式存储与计算：像hadoop、或者你做个raft的共识算法的话，也可也发现我们在不同节点之间使用rpc传递数据进行通信。
-* 嵌入式系统： 在嵌入式设备之间的通信中，资源有限且性能要求严格。C++的轻量级特性使其成为嵌入式RPC实现的理想选择。
-* 跨语言调用： C++ RPC框架通常支持多语言绑定（如Python、Java），可以用作跨语言调用的桥梁。例如，在后端服务使用C++开发的情况下，前端服务可以通过RPC框架调用其功能。
-
-## 项目专栏
-
-在项目专栏中， 该**项目简历如何写、性能如何测试、项目怎么优化、面试都会问哪些问题**，都安排好了。
-
-不仅如此，还有 「技术栈需求」「运行环境」「RPC理论」「日志库」「代码解读」
-
-### 简历写法
-
-专栏里直接给出简历写法， 项目难点 和 个人收获是面试官最关心的部分。
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103223303.png' width=500 alt=''></img></div>
-
-在[知识星球](https://programmercarl.com/other/kstar.html)RPC项目专栏 会给出本项目的参考简历写法，为了不让 这些写法重复率太高，所以公众号上是打码的。
-
-### 性能测试
-
-带大家测试RPC的性能，更充分了解 系统的表现。
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103224011.png' width=500 alt=''></img></div>
-
-### 项目优化
-
-项目文档列出的十几个优化点：
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103224306.png' width=500 alt=''></img></div>
-
-涉及到 「通信模块」 「服务注册与发现模块」「负载均衡模块」「零拷贝优化技术」「日志与监控模块」「健康检测与熔断机制」「重试与超时处理」
-
-从各个方面，带大家去了解项目如何进一步优化，帮助大家找到可以拓展的方向，打造自己的项目竞争力，也避免了项目重复。
-
-### 代码讲解
-
-给出项目整体流程图：
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103224628.png' width=500 alt=''></img></div>
-
-其中项目的所有代码以及每个函数和类都有详细解释，根本不用担心自己看不懂：
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103224733.png' width=500 alt=''></img></div>
-
-同时我们对项目中需要用到的日志库做了详细的分析：
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103225024.png' width=500 alt=''></img></div>
-
-### RPC理论
-
-项目文档帮大家梳理清楚 RPC 的来龙去脉 ：
-
-<div align="center"><img src='https://file1.kamacoder.com/i/algo/20250103224858.png' width=500 alt=''></img></div>
-
-### 突击来用
-
-如果大家面试在即，实在没时间做项目了，可以直接按照专栏给出的简历写法，写到简历上，然后把项目专栏里的面试问题，都认真背一背就好了，基本覆盖 绝大多数 RPC项目问题。
-
-
-## 获取本项目专栏
-
-本文档仅为星球内部专享，大家可以加入[知识星球](https://programmercarl.com/other/kstar.html)里获取。
-
-
-## 构建与运行
-
-```bash
-cd ~/cpp_code/llm-rpc
-cmake -S . -B build
-cmake --build build -j 4
-sudo systemctl start zookeeper
-cd bin
-./llm_rpc_server -i test.conf
-# 在另一终端进入同一 bin 目录
-./llm_rpc_client -i test.conf
+```mermaid
+flowchart LR
+    U[中文问题] --> C[协调器-分词与聊天模板]
+    C -. 服务发现 .-> Z[ZooKeeper]
+    P[Prefill Worker] -. 服务注册 .-> Z
+    D[Decode Worker] -. 服务注册 .-> Z
+    C -->|prompt token IDs| P
+    P -->|KV 快照与首 token| C
+    C -->|KV 快照与生成上限| D
+    D -->|输出 token IDs| C
+    C --> A[反分词后的文本回答]
 ```
 
-核心命名空间为 `llm_rpc`，协议包为 `llm_rpc.protocol`，示例协议包为 `llm_rpc.example`。
+- **原生推理**。项目内实现 FP32 CPU Transformer 前向、GQA、RoPE、RMSNorm 和 greedy 生成。支持 `stories260K`，以及由 `safetensors-cpp` 直接读取的 Qwen 官方 BF16 权重。Qwen 权重加载后以 FP32 计算。
+- **请求内 KV Cache**。按层存储每条序列的 K/V，支持版本化快照、跨进程文件交接和 RPC 交接。恢复时校验模型指纹、张量形状和位置。
+- **RPC 传输**。以 Muduo 和 Protobuf 实现 TCP RPC，支持 ZooKeeper 注册与发现、连接复用、完整收发、帧长度校验和建连及收发截止时间。
+- **文本问答**。C++ 客户端负责 Qwen BPE、单轮聊天模板和反分词。运行无需 Python。当前使用 256 token 的模型上下文，提示词模板和问题也占用上下文。
+
+## 快速运行 Qwen 问答
+
+环境为 Linux 或 WSL Ubuntu。构建需 C++14 编译器、CMake、Protobuf 开发库及 `protoc`、Muduo、ZooKeeper 多线程客户端库、glog 和 ICU 开发库（Ubuntu 包名 `libicu-dev`）。运行分离推理还需可连接的 ZooKeeper 服务。
+
+在 `~/ModelWeights/Qwen2.5-0.5B-Instruct/` 放置 `model.safetensors`、`tokenizer.json` 和 `tokenizer_config.json`，建议三个文件使用同一官方版本。 [Qwen 官方模型文件](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/tree/7ae557604adf67be50417f59c2c2f167def9a775)
+
+在项目根目录构建并创建 worker 配置：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4
+sudo systemctl start zookeeper
+
+sed 's/^rpcserverport=.*/rpcserverport=8101/' bin/test.conf > bin/prefill.conf
+sed 's/^rpcserverport=.*/rpcserverport=8102/' bin/test.conf > bin/decode.conf
+```
+
+在两个终端分别执行以下命令。两个终端都从项目根目录启动：
+
+```bash
+# 终端 1
+./bin/llm_rpc_inference_worker prefill \
+  "$HOME/ModelWeights/Qwen2.5-0.5B-Instruct/model.safetensors" -i bin/prefill.conf
+
+# 终端 2
+./bin/llm_rpc_inference_worker decode \
+  "$HOME/ModelWeights/Qwen2.5-0.5B-Instruct/model.safetensors" -i bin/decode.conf
+```
+
+两个 worker 都输出 `RpcProvider start service` 后，在第三个终端发起问答：
+
+```bash
+./bin/llm_rpc_inference_client -i bin/test.conf --chat \
+  "$HOME/ModelWeights/Qwen2.5-0.5B-Instruct" \
+  '1加1等于几？只回答数字。' 4 60000 42
+```
+
+实测输出为 `2`。最后三个参数依次为最大输出 token 数、RPC 超时毫秒数和请求 ID。使用 `Release` 构建可以缩短 CPU 前向耗时。
+
+## 项目结构
+
+| 位置 | 内容 |
+| --- | --- |
+| `src/`、`src/include/` | RPC 客户端与服务端、连接池、服务发现 |
+| `src/inference/` | 模型加载与前向、KV 快照、分词、推理协议和 worker |
+| `example/` | 原有 Login RPC 客户端与服务端示例 |
+| `third_party/` | 权重及 JSON 读取组件和对应许可 |
+| `docs/` | 设计文档及请求时序图 |
+
+## 实现进度与计划
+
+| 阶段 | 状态 | 功能与验收 |
+| --- | --- | --- |
+| M0 单进程基线 | 已完成 | 原生权重加载和前向，以固定输入对照 logits 与 greedy token |
+| M1 请求内 KV 与文件交接 | 已完成 | Prefill 导出快照，独立 Decode 进程恢复并续写，输出与单进程一致 |
+| M2 RPC 分离 | 已完成 | 协调器经 ZooKeeper 路由并中转快照，已验证短读短写、超时恢复及 Decode 零 prompt 前向 |
+| Qwen BF16 与文本问答 | 已完成 | 直接读取官方未量化权重，验证单进程、文件交接和 RPC 输出一致，实测中文单轮问答 |
+| M3 跨请求复用与基准 | 待实现 | Prefill 侧按模型指纹、快照配置和完整 prompt token 序列查找不可变快照，命中时跳过 Prefill。按字节预算做 LRU 淘汰，传输期间保持快照引用有效 |
+| Qwen 独立参考校验 | 待完成 | 对照官方参考的 logits、greedy token、分词和模板输入 ID，并补充模型不兼容回归 |
+| Qwen Q4_K_M GGUF | 待实现 | 读取 GGUF 元数据与量化张量，验证量化模型的输出，记录耗时及内存占用 |
+| 运行时扩展 | 待实现 | CUDA、连续批处理和流式输出 |
+
+M3 将比较 **单进程 KV、双进程冷缓存、双进程热缓存**，记录 Prefill、导出、传输、导入耗时、快照大小、端到端延迟与 Decode tokens/s。验收覆盖重复 prompt 命中、不同 token 序列未命中及超预算淘汰。详细的模型兼容性约定、快照布局和后续计划见 [Prefill/Decode 与 KV Cache 设计](docs/prefill-decode-kv-cache.md)。
