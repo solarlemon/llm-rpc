@@ -215,6 +215,7 @@ namespace llm_rpc
                                  embedding_.begin() + (token + 1) * d);
             try
             {
+                // 进入多层 Transformer：每层写入 KV，计算注意力 + FFN
                 for (std::size_t layer = 0; layer < layers_.size(); ++layer)
                 {
                     check_cancel(cancel); // 逐层检查取消
