@@ -86,6 +86,8 @@ int main(int argc, char **argv)
 
         // 加载模型权重
         const Model model(argv[1]);
+            if (text_mode && model.uses_qwen())
+                throw std::invalid_argument("Qwen currently requires token IDs");
         const auto capacity = model.cache_shape().capacity;
         // 设置输出精度，保证浮点数无损输出
         std::cout << std::setprecision(std::numeric_limits<float>::max_digits10);
