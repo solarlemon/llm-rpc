@@ -2,6 +2,8 @@
 #include "rpc_application.h"
 #include "rpc_channel.h"
 #include "rpc_controller.h"
+#include "qwen_tokenizer.hpp"
+#include <memory>
 
 #include <chrono>
 #include <iostream>
@@ -49,28 +51,44 @@ int main(int argc, char **argv)
     try
     {
         // 1. 解析命令行参数：配置文件、Prompt ID列表、最大生成数、超时时间、Request ID
-        if (argc != 7 || std::string(argv[1]) != "-i")
-            throw std::invalid_argument("Usage: llm_rpc_inference_client -i CONFIG IDS MAX_TOKENS TIMEOUT_MS REQUEST_ID");
+        const bool chat = argc == 9 && std::string(argv[3]) == "--chat";
+        if ((argc != 7 && !chat) || std::string(argv[1]) != "-i")
+            throw std::invalid_argument(
+                "Usage: llm_rpc_inference_client -i CONFIG IDS MAX_TOKENS TIMEOUT_MS REQUEST_ID\n"
+                "       llm_rpc_inference_client -i CONFIG --chat TOKENIZER_DIR QUESTION MAX_TOKENS TIMEOUT_MS REQUEST_ID");
 
         char *config_args[] = {argv[0], argv[1], argv[2], nullptr};
         RpcApplication::Init(3, config_args); // 初始化 RPC 框架（从配置文件读取 ZK 地址等）
 
-        const auto maximum = parse(argv[4], 65536);
-        const auto timeout = parse(argv[5], 60000);
-        const auto id = parse(argv[6], std::numeric_limits<std::uint32_t>::max());
+        const auto maximum = parse(argv[argc - 3], 65536);
+        const auto timeout = parse(argv[argc - 2], 60000);
+        const auto id = parse(argv[argc - 1], std::numeric_limits<std::uint32_t>::max());
         if (!maximum || !timeout)
             throw std::invalid_argument("generation limit and timeout must be positive");
 
         // 2. 构建 Prefill 请求（解析逗号分隔的 Token ID，如 "1,23,45"）
-        const std::string ids = argv[3];
         PrefillRequest prefill;
-        for (std::size_t begin = 0;;)
+        std::unique_ptr<QwenTokenizer> tokenizer;
+        if (chat)
         {
-            const auto end = ids.find(',', begin);
-            prefill.add_prompt(parse(ids.substr(begin, end - begin), std::numeric_limits<int>::max()));
-            if (end == std::string::npos)
-                break;
-            begin = end + 1;
+            tokenizer = std::make_unique<QwenTokenizer>(argv[4]);
+            const auto prompt = tokenizer->prompt(argv[5]);
+            if (prompt.size() + maximum - 1 > 256)
+                throw std::invalid_argument("Qwen prompt and output exceed 256-token context");
+            for (const auto id : prompt)
+                prefill.add_prompt(id);
+        }
+        else
+        {
+            const std::string ids = argv[3];
+            for (std::size_t begin = 0;;)
+            {
+                const auto end = ids.find(',', begin);
+                prefill.add_prompt(parse(ids.substr(begin, end - begin), std::numeric_limits<int>::max()));
+                if (end == std::string::npos)
+                    break;
+                begin = end + 1;
+            }
         }
         prefill.set_request_id(id);
 
@@ -120,6 +138,13 @@ int main(int argc, char **argv)
         remaining(deadline); // 最终再校验一次是否超时
         if (reply.request_id() != id)
             throw std::runtime_error("invalid Decode reply ID");
+
+        if (chat)
+        {
+            const std::vector<std::int32_t> tokens(reply.tokens().begin(), reply.tokens().end());
+            std::cout << tokenizer->decode(tokens) << '\n';
+            return 0;
+        }
 
         // 7. 打印标准的 JSON 格式输出，方便外部监控或前端解析
         std::cout << "{\"request_id\":" << id
