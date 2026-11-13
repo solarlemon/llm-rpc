@@ -1,4 +1,7 @@
-add_library(llm_rpc_inference STATIC model.cpp kv_cache.cpp tokenizer.cpp snapshot.cpp)
+add_library(llm_rpc_inference STATIC model.cpp qwen_model.cpp kv_cache.cpp tokenizer.cpp snapshot.cpp
+    ${PROJECT_SOURCE_DIR}/third_party/safetensors-cpp/safetensors.cc)
+target_include_directories(llm_rpc_inference SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/third_party/safetensors-cpp)
 target_include_directories(llm_rpc_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(llm_rpc_inference PRIVATE -Wall -Wextra)
 
@@ -18,3 +21,9 @@ set_target_properties(llm_rpc_inference_worker llm_rpc_inference_client PROPERTI
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 target_link_libraries(llm_rpc_inference_worker PRIVATE llm_rpc_inference llm_rpc_inference_protocol llm_rpc_core ${LIBS})
 target_link_libraries(llm_rpc_inference_client PRIVATE llm_rpc_inference_protocol llm_rpc_core ${LIBS})
+
+find_package(ICU REQUIRED COMPONENTS i18n uc)
+target_sources(llm_rpc_inference_client PRIVATE qwen_tokenizer.cpp)
+target_include_directories(llm_rpc_inference_client SYSTEM PRIVATE
+    ${ICU_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/third_party/nlohmann)
+target_link_libraries(llm_rpc_inference_client PRIVATE ${ICU_LIBRARIES})
