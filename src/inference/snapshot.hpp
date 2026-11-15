@@ -17,12 +17,14 @@ namespace llm_rpc
                              const KVCache &cache, TokenId first_token, std::uint32_t request_id);
             static KVSnapshot load(const std::string &path, const Model &model);
             static std::string encode(const Model &model, const KVCache &cache, TokenId first_token,
-                                      std::uint32_t request_id, std::size_t max_bytes);
+                                      std::uint32_t request_id, std::size_t max_bytes,
+                                      const Cancel &cancel = {});
             static KVSnapshot decode(const std::string &bytes, const Model &model);
 
         private:
             static void write(std::ostream &out, const Model &model, const KVCache &cache,
-                              TokenId first_token, std::uint32_t request_id);
+                              TokenId first_token, std::uint32_t request_id,
+                              const Cancel &cancel);
             static KVSnapshot read(std::istream &in, const Model &model);
         };
     }

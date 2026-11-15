@@ -59,7 +59,8 @@ namespace llm_rpc
 
         // 核心写入逻辑：把内存中的 KVCache 拍平写入流
         void KVSnapshot::write(std::ostream &out, const Model &model, const KVCache &cache,
-                               TokenId first_token, std::uint32_t request_id)
+                               TokenId first_token, std::uint32_t request_id,
+                               const Cancel &cancel)
         {
             const auto shape = model.cache_shape();
             const auto actual = cache.shape();
@@ -89,6 +90,10 @@ namespace llm_rpc
             // 写入实际的浮点数据（只写入有效位置，不写空余容量）
             const auto elements = positions * cache.layer_width_;
             for (std::size_t layer = 0; layer < shape.layers; ++layer)
+            {
+                // 每层检查一次取消：客户端断开后没必要继续搬运剩余层的数据
+                if (cancel && cancel())
+                    throw std::runtime_error("mini_cancelled");
                 for (const auto *buffer : {&cache.keys_, &cache.values_})
                     for (std::size_t index = 0; index < elements; ++index)
                     {
@@ -99,17 +104,19 @@ namespace llm_rpc
                         std::memcpy(&bits, &value, sizeof(bits)); // 按照 IEEE754 提取浮点位
                         put(out, bits);
                     }
+            }
         }
 
         // 编码为字符串（供 RPC 发送）
         std::string KVSnapshot::encode(const Model &model, const KVCache &cache, TokenId first_token,
-                                       std::uint32_t request_id, std::size_t max_bytes)
+                                       std::uint32_t request_id, std::size_t max_bytes,
+                                       const Cancel &cancel)
         {
             if (max_bytes < header_bytes || cache.valid_bytes() > max_bytes - header_bytes)
                 throw std::runtime_error("KV snapshot exceeds RPC byte budget");
             std::ostringstream out(std::ios::binary);
             out.exceptions(std::ios::failbit | std::ios::badbit); // 开启流异常，防止写入失败
-            write(out, model, cache, first_token, request_id);
+            write(out, model, cache, first_token, request_id, cancel);
             return out.str();
         }
 
@@ -127,7 +134,7 @@ namespace llm_rpc
             {
                 std::ofstream out(temporary, std::ios::binary);
                 out.exceptions(std::ios::failbit | std::ios::badbit);
-                write(out, model, cache, first_token, request_id);
+                write(out, model, cache, first_token, request_id, {});
                 out.close();
                 // 原子重命名：确保外部看到的要么是完整的文件，要么不存在
                 if (std::rename(temporary.c_str(), path.c_str()) != 0)
