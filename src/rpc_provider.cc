@@ -1,8 +1,11 @@
 #include "rpc_provider.h"
 #include "rpc_application.h" // 全局配置
+#include "rpc_cancel.h"      // CancelToken / ConnectionState
+#include "rpc_controller.h"  // 服务端取消票据的注入点
 #include "rpc_header.pb.h"   // RpcHeader 协议头
 #include "rpc_logger.h"
 #include "rpc_transport.h"
+#include <boost/any.hpp>
 #include <iostream>
 
 namespace llm_rpc
@@ -121,10 +124,24 @@ namespace llm_rpc
     // ============================================================
     void RpcProvider::OnConnection(const muduo::net::TcpConnectionPtr &conn)
     {
-        if (!conn->connected())
+        if (conn->connected())
         {
-            conn->shutdown(); // 对端已断开，清理
+            // 每条连接一个状态对象，承载「是否已断开」和「在飞请求登记表」。
+            // 只能在这里（IO 线程）调用 setContext/getContext，不能跨线程访问。
+            conn->setContext(std::make_shared<ConnectionState>());
+            return;
         }
+
+        // 断连：置位该连接上所有在飞请求的取消票据。
+        // 注意不能读 conn->connected() —— 这版 muduo 的 state_ 不是原子变量。
+        const auto *slot =
+            boost::any_cast<std::shared_ptr<ConnectionState>>(&conn->getContext());
+        if (slot && *slot)
+        {
+            (*slot)->closed.store(true, std::memory_order_relaxed);
+            (*slot)->CancelAll();
+        }
+        conn->shutdown(); // 对端已断开，清理
     }
 
     // ============================================================
@@ -237,20 +254,38 @@ namespace llm_rpc
             // 按 response 原型创建响应对象（业务侧填充）
             google::protobuf::Message *response = service->GetResponsePrototype(method).New();
 
-            // ---- 步骤 8：创建 done 闭包，业务处理完后触发回包 ----
-            // 业务代码末尾 done->Run();  所以最后会调用 SendRpcResponse(conn, response, request) 写回客户端
-            // 捕获 conn / response / request，等 CallMethod 完成后发响应并释放资源
+            // ---- 步骤 8：登记取消票据，并创建服务端控制器 ----
+            // 连接会被连接池复用，一条连接上可能同时有多个在飞请求，
+            // 因此把票据登记到连接级别，断连时统一置位（见 OnConnection）。
+            std::shared_ptr<ConnectionState> state;
+            if (const auto *slot =
+                    boost::any_cast<std::shared_ptr<ConnectionState>>(&conn->getContext()))
+                state = *slot;
+
+            auto token = std::make_shared<CancelToken>();
+            if (state)
+                state->Register(token);
+
+            // 服务端控制器：业务层通过 IsCanceled() 得知客户端是否已断开
+            auto *controller = new RpcController;
+            controller->SetCancelToken(token);
+
+            // ---- 步骤 9：创建 done 闭包，业务处理完后触发回包 ----
+            // 客户端已断开时只回收内存，不做 6MB 快照的序列化和发送
             google::protobuf::Closure *done = new RpcClosure(
-                [this, conn, response, request]()
+                [this, conn, state, response, request, controller]()
                 {
-                    this->SendRpcResponse(conn, response, request);
+                    const bool deliver =
+                        !(state && state->closed.load(std::memory_order_relaxed));
+                    this->SendRpcResponse(conn, response, request, deliver);
+                    delete controller;
                     pending_.fetch_sub(1);
                 });
 
-            // ---- 步骤 9：丢到线程池执行业务逻辑 ----
-            // 注意：request/response/done 都是堆对象，由闭包负责回收
-            m_thread_pool.run([service, method, request, response, done]()
-                              { service->CallMethod(method, nullptr, request, response, done); });
+            // ---- 步骤 10：丢到线程池执行业务逻辑 ----
+            // 注意：request/response/controller/done 都是堆对象，由闭包负责回收
+            m_thread_pool.run([service, method, controller, request, response, done]()
+                              { service->CallMethod(method, controller, request, response, done); });
 
             // // 空跑框架测试：不用线程池，直接在 IO 线程处理（会阻塞收发）
             // service->CallMethod(method, nullptr, request, response, done);
@@ -264,8 +299,17 @@ namespace llm_rpc
     // ============================================================
     void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr &conn,
                                       google::protobuf::Message *response,
-                                      google::protobuf::Message *request)
+                                      google::protobuf::Message *request,
+                                      bool deliver)
     {
+        if (!deliver)
+        {
+            // 客户端已断开：跳过序列化与发送，但仍然要回收堆对象
+            delete response;
+            delete request;
+            return;
+        }
+
         std::string response_str;
         if (response->ByteSizeLong() <= rpc_max_frame && response->SerializeToString(&response_str))
         {

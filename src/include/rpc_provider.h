@@ -38,7 +38,8 @@ private:
     void OnConnection(const muduo::net::TcpConnectionPtr& conn);
     void OnMessage(const muduo::net::TcpConnectionPtr& conn, muduo::net::Buffer* buffer, muduo::Timestamp receive_time);
     
-    void SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request);
+    // deliver=false 表示客户端已断开：只回收 response/request，不做序列化和发送
+    void SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request, bool deliver = true);
 };
 
 }  // namespace llm_rpc
