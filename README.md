@@ -2,6 +2,17 @@
 
 LLM-RPC 是一个 C++14 CPU 推理与 RPC 学习项目，支持 **Qwen2.5-0.5B-Instruct 中文单轮问答**。Prefill 和 Decode 由两个独立进程执行，协调器通过 TCP RPC 传递请求内 KV 快照。Decode 恢复缓存后继续生成，无需重算 prompt。
 
+## 验证摘要
+
+| 维度 | 结论 | 证据 |
+| --- | --- | --- |
+| 正确性 | 与官方 transformers 对照：分词与 chat 模板 35/35 一致，logits 最大绝对误差 5.8e-5（相对 2.7e-6），greedy 16/16 逐 token 一致 | [参考校验](docs/reference-check.md) |
+| 分离推理 | Decode 侧 prompt 前向量为 0；单进程 / P-D 冷 / P-D 热三种模式输出逐 token 相同；单 token KV 24 KB，64 token 快照 1.5 MB | [推理基准](docs/benchmark.md) |
+| 可靠性 | 客户端断连由每层推理检查点感知，取消发现延迟 0–28 ms，推理槽位毫秒级释放 | [取消传播](docs/cancel-propagation.md) |
+| 性能 | P/D 交接 25 ms，占端到端 0.17%；decode 4.4 tok/s，受内存带宽约束（约 8.7 GB/s） | [推理基准](docs/benchmark.md) |
+
+实测环境为 WSL2 + Qwen2.5-0.5B-Instruct（FP32 CPU）、单推理槽位；上表数字均可由 `scripts/bench.sh`、`scripts/cancel_demo.sh`、`scripts/ref_check.py` 复现。
+
 ## 系统架构
 
 ```mermaid
@@ -79,9 +90,10 @@ sed 's/^rpcserverport=.*/rpcserverport=8102/' bin/test.conf > bin/decode.conf
 | M1 请求内 KV 与文件交接 | 已完成 | Prefill 导出快照，独立 Decode 进程恢复并续写，输出与单进程一致 |
 | M2 RPC 分离 | 已完成 | 协调器经 ZooKeeper 路由并中转快照，已验证短读短写、超时恢复及 Decode 零 prompt 前向 |
 | Qwen BF16 与文本问答 | 已完成 | 直接读取官方未量化权重，验证单进程、文件交接和 RPC 输出一致，实测中文单轮问答 |
-| M3 跨请求复用与基准 | 待实现 | Prefill 侧按模型指纹、快照配置和完整 prompt token 序列查找不可变快照，命中时跳过 Prefill。按字节预算做 LRU 淘汰，传输期间保持快照引用有效 |
-| Qwen 独立参考校验 | 待完成 | 对照官方参考的 logits、greedy token、分词和模板输入 ID，并补充模型不兼容回归 |
+| 三模式基准与分段耗时 | 已完成 | 单进程 / P-D 冷 / P-D 热三种模式，输出 TTFT、decode tokens/s、快照字节与 prefill、编码、传输、导入各段耗时；三种模式输出逐 token 一致，详见 [推理基准](docs/benchmark.md) |
+| M3 跨请求复用 | 待实现 | Prefill 侧按模型指纹、快照配置和完整 prompt token 序列查找不可变快照，命中时跳过 Prefill。按字节预算做 LRU 淘汰，传输期间保持快照引用有效 |
+| Qwen 独立参考校验 | 已完成 | 与官方 transformers 对照：分词与 chat 模板 35/35 一致、logits 最大绝对误差 5.8e-5、greedy 16/16 逐 token 一致，见 [参考校验](docs/reference-check.md) |
 | Qwen Q4_K_M GGUF | 待实现 | 读取 GGUF 元数据与量化张量，验证量化模型的输出，记录耗时及内存占用 |
 | 运行时扩展 | 待实现 | CUDA、连续批处理和流式输出 |
 
-M3 将比较 **单进程 KV、双进程冷缓存、双进程热缓存**，记录 Prefill、导出、传输、导入耗时、快照大小、端到端延迟与 Decode tokens/s。验收覆盖重复 prompt 命中、不同 token 序列未命中及超预算淘汰。详细的模型兼容性约定、快照布局和后续计划见 [Prefill/Decode 与 KV Cache 设计](docs/prefill-decode-kv-cache.md)。
+基准显示 P/D 交接开销约占端到端 0.17%，剩余成本受链路带宽与 CPU 前向支配；M3 将在其基础上增加跨请求 KV 复用，验收覆盖重复 prompt 命中、不同 token 序列未命中及超预算淘汰，复用后 TTFT 预计由 14.3 s 降至约 60 ms。基准方法与数据见 [推理基准](docs/benchmark.md)，客户端断连后的槽位释放见 [请求取消传播](docs/cancel-propagation.md)。
