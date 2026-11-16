@@ -2,6 +2,8 @@
 #include "snapshot.hpp"
 #include "tokenizer.hpp"
 
+#include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -10,6 +12,13 @@
 namespace
 {
     using namespace llm_rpc::inference;
+    using Clock = std::chrono::steady_clock;
+
+    // 毫秒（double），用于 JSON 中的分段耗时
+    double to_ms(Clock::duration span)
+    {
+        return std::chrono::duration<double, std::milli>(span).count();
+    }
 
     // 1. 基础参数解析工具：把字符串转成整数，并严格校验是否有多余字符
     int parse_integer(const std::string &value)
@@ -85,7 +94,9 @@ int main(int argc, char **argv)
                 "       llm_rpc_generate MODEL --decode SNAPSHOT MAX_NEW_TOKENS");
 
         // 加载模型权重
+        const auto load_begin = Clock::now();
         const Model model(argv[1]);
+        const auto load_end = Clock::now();
             if (text_mode && model.uses_qwen())
                 throw std::invalid_argument("Qwen currently requires token IDs");
         const auto capacity = model.cache_shape().capacity;
@@ -127,11 +138,13 @@ int main(int argc, char **argv)
         validate_budget(prompt.size(), capacity, maximum);
 
         // ================= 模式 1 & 2 & 3: Prefill =================
+        const auto prefill_begin = Clock::now();
         KVCache cache(model.cache_shape());
         // 传入所有 Prompt Token，计算最后一次的 logits
         const auto logits = model.prefill(prompt, cache);
         // 拿到预测的第一个 Token
         const auto first = Model::greedy(logits);
+        const auto prefill_end = Clock::now();
 
         // ================= 模式 3: Prefill (只计算并保存快照) =================
         if (prefill_mode)
@@ -148,11 +161,24 @@ int main(int argc, char **argv)
 
         // ================= 模式 1 & 2: 生成并打印 =================
         // 基于 prefill 的 cache 和首 token，继续自回归生成
+        const auto decode_begin = Clock::now();
         const auto result = generate(model, cache, first, maximum);
+        const auto decode_end = Clock::now();
+
+        // 基准模式（LLM_RPC_BENCH=1）：跳过 logits 数组
+        // （151936 个 float 会把输出打爆，且与计时无关）
+        const bool bench = std::getenv("LLM_RPC_BENCH") != nullptr;
         std::cout << "{\"prompt_ids\":";
         print_array(prompt);
-        std::cout << ",\"prefill_logits\":";
-        print_array(logits);
+        std::cout << ",\"load_ms\":" << to_ms(load_end - load_begin)
+                  << ",\"prefill_ms\":" << to_ms(prefill_end - prefill_begin)
+                  << ",\"decode_ms\":" << to_ms(decode_end - decode_begin)
+                  << ",\"decode_calls\":" << result.decode_calls;
+        if (!bench)
+        {
+            std::cout << ",\"prefill_logits\":";
+            print_array(logits);
+        }
         print_generation(result);
         return 0;
     }

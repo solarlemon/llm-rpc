@@ -5,6 +5,9 @@
 
 #include <arpa/inet.h>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
 #include <mutex>
 #include <sys/socket.h>
 
@@ -62,8 +65,17 @@ namespace llm_rpc
         frame += encoded;
         frame += args;
 
+        // 可选的分段诊断：LLM_RPC_TRACE=1 时把本次调用拆到 stderr
+        const bool trace = std::getenv("LLM_RPC_TRACE") != nullptr;
+        using TraceClock = std::chrono::steady_clock;
+        const auto trace_us = [](TraceClock::duration span)
+        {
+            return std::chrono::duration_cast<std::chrono::microseconds>(span).count();
+        };
+
         static std::once_flag initialized;
         static std::atomic<std::uint64_t> sequence{0};
+        const auto discovery_begin = TraceClock::now();
         std::string address;
         try
         {
@@ -76,6 +88,7 @@ namespace llm_rpc
         {
             return fail("RPC service discovery failed");
         }
+        const auto discovery_end = TraceClock::now();
         const auto separator = address.find(':');
         if (separator == std::string::npos)
             return fail("No RPC endpoint");
@@ -88,14 +101,18 @@ namespace llm_rpc
         if (port <= 0 || port > 65535)
             return fail("Invalid RPC endpoint");
         auto &pool = RpcConnectionPool::GetInstance();
+        const auto borrow_begin = TraceClock::now();
         const auto fd = pool.BorrowConnection(ip, port, deadline);
+        const auto borrow_end = TraceClock::now();
         if (fd < 0)
             return fail("RPC connection failed or deadline exceeded");
 
         bool complete = false;
         std::uint32_t size = 0;
-        if (Transfer(fd, &frame[0], frame.size(), true, deadline) &&
-            Transfer(fd, reinterpret_cast<char *>(&size), sizeof(size), false, deadline))
+        const auto send_begin = TraceClock::now();
+        const bool sent = Transfer(fd, &frame[0], frame.size(), true, deadline);
+        const auto send_end = TraceClock::now();
+        if (sent && Transfer(fd, reinterpret_cast<char *>(&size), sizeof(size), false, deadline))
         {
             size = ntohl(size);
             if (size <= rpc_max_frame)
@@ -105,7 +122,17 @@ namespace llm_rpc
                            response->ParseFromArray(size ? body.data() : "", size);
             }
         }
+        const auto recv_end = TraceClock::now();
         pool.ReturnConnection(ip, port, fd, !complete);
+        if (trace)
+        {
+            std::cerr << "[channel] " << header.service_name()
+                      << " discovery=" << trace_us(discovery_end - discovery_begin)
+                      << "us borrow=" << trace_us(borrow_end - borrow_begin)
+                      << "us send=" << trace_us(send_end - send_begin)
+                      << "us recv+parse=" << trace_us(recv_end - send_end)
+                      << "us bytes=" << size << "\n";
+        }
         if (!complete)
             fail("RPC I/O failed, frame invalid, or deadline exceeded");
     }

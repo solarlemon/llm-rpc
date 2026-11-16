@@ -5,9 +5,13 @@
 #include "qwen_tokenizer.hpp"
 #include <memory>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace
@@ -66,17 +70,15 @@ int main(int argc, char **argv)
         if (!maximum || !timeout)
             throw std::invalid_argument("generation limit and timeout must be positive");
 
-        // 2. 构建 Prefill 请求（解析逗号分隔的 Token ID，如 "1,23,45"）
-        PrefillRequest prefill;
+        // 2. prompt 只构建一次：重复请求时复用，避免反复解析与分词
         std::unique_ptr<QwenTokenizer> tokenizer;
+        std::vector<std::int32_t> prompt_ids;
         if (chat)
         {
             tokenizer = std::make_unique<QwenTokenizer>(argv[4]);
-            const auto prompt = tokenizer->prompt(argv[5]);
-            if (prompt.size() + maximum - 1 > 256)
+            prompt_ids = tokenizer->prompt(argv[5]);
+            if (prompt_ids.size() + maximum - 1 > 256)
                 throw std::invalid_argument("Qwen prompt and output exceed 256-token context");
-            for (const auto id : prompt)
-                prefill.add_prompt(id);
         }
         else
         {
@@ -84,13 +86,41 @@ int main(int argc, char **argv)
             for (std::size_t begin = 0;;)
             {
                 const auto end = ids.find(',', begin);
-                prefill.add_prompt(parse(ids.substr(begin, end - begin), std::numeric_limits<int>::max()));
+                prompt_ids.push_back(parse(ids.substr(begin, end - begin), std::numeric_limits<int>::max()));
                 if (end == std::string::npos)
                     break;
                 begin = end + 1;
             }
         }
+
+        // 开发期校验：把 chat 模板的分词结果导出，便于与 HuggingFace 的
+        // apply_chat_template 逐 id 对照（导出后直接退出，不发起 RPC）
+        if (const char *dump_path = std::getenv("LLM_RPC_DUMP_PROMPT"))
+        {
+            std::ofstream dump(dump_path);
+            if (!dump)
+                throw std::runtime_error("cannot open prompt dump file");
+            for (std::size_t i = 0; i < prompt_ids.size(); ++i)
+                dump << (i ? "," : "") << prompt_ids[i];
+            dump << '\n';
+            return 0;
+        }
+
+        // LLM_RPC_REPEAT=N：同一进程内连续发起 N 次请求。
+        // 把 ZooKeeper 会话建立（约 36 ms）与服务发现的开销从单次请求里摊掉，
+        // 基准脚本的"热态"就是用这个模式测量的。
+        const char *repeat_env = std::getenv("LLM_RPC_REPEAT");
+        const int repeats = repeat_env ? std::max(1, std::atoi(repeat_env)) : 1;
+
+        for (int iteration = 0; iteration < repeats; ++iteration)
+        {
+        const auto started_at = Clock::now(); // 分段计时起点
+
+        PrefillRequest prefill;
+        for (const auto token : prompt_ids)
+            prefill.add_prompt(token);
         prefill.set_request_id(id);
+        const auto tokenized_at = Clock::now();
 
         // 3. 计算全局超时 Deadline，并计算 Prefill 阶段能用的时间
         const auto deadline = Clock::now() + std::chrono::milliseconds(timeout);
@@ -106,6 +136,7 @@ int main(int argc, char **argv)
 
         // 4. 远程调用 Prefill 服务（获取 KV Cache 快照）
         prefill_stub.RunPrefill(&controller, &prefill, &snapshot, nullptr);
+        const auto prefill_done = Clock::now();
         check(controller, snapshot.error());
 
         if (snapshot.request_id() != id || snapshot.snapshot().empty())
@@ -133,28 +164,50 @@ int main(int argc, char **argv)
 
         // 6. 远程调用 Decode 服务（带着快照去生成文本）
         decode_stub.RunDecode(&controller, &decode, &reply, nullptr);
+        const auto decode_done = Clock::now();
         check(controller, reply.error());
 
         remaining(deadline); // 最终再校验一次是否超时
         if (reply.request_id() != id)
             throw std::runtime_error("invalid Decode reply ID");
 
+        // 7. 汇总分段耗时：
+        //    客户端侧——分词 / Prefill RPC / Decode RPC；
+        //    服务端回传——prefill 计算、快照编码、快照导入、生成。
+        const auto us = [](Clock::duration span)
+        {
+            return std::chrono::duration_cast<std::chrono::microseconds>(span).count();
+        };
+        std::ostringstream metrics;
+        metrics << "\"iteration\":" << iteration
+                << ",\"request_id\":" << id
+                << ",\"snapshot_bytes\":" << snapshot_bytes
+                << ",\"prompt_forward_tokens\":" << reply.prompt_forward_tokens()
+                << ",\"decode_forward_calls\":" << reply.decode_forward_calls()
+                << ",\"tokenize_us\":" << us(tokenized_at - started_at)
+                << ",\"prefill_rpc_us\":" << us(prefill_done - tokenized_at)
+                << ",\"prefill_us\":" << snapshot.prefill_us()
+                << ",\"encode_us\":" << snapshot.encode_us()
+                << ",\"decode_rpc_us\":" << us(decode_done - prefill_done)
+                << ",\"import_us\":" << reply.import_us()
+                << ",\"generate_us\":" << reply.generate_us()
+                << ",\"total_us\":" << us(decode_done - started_at);
+
         if (chat)
         {
             const std::vector<std::int32_t> tokens(reply.tokens().begin(), reply.tokens().end());
             std::cout << tokenizer->decode(tokens) << '\n';
+            // 问答模式下 stdout 只放答案，指标写到 stderr 供基准脚本抓取
+            std::cerr << "BENCH {" << metrics.str() << "}\n";
             return 0;
         }
 
-        // 7. 打印标准的 JSON 格式输出，方便外部监控或前端解析
-        std::cout << "{\"request_id\":" << id
-                  << ",\"snapshot_bytes\":" << snapshot_bytes
-                  << ",\"prompt_forward_tokens\":" << reply.prompt_forward_tokens()
-                  << ",\"decode_forward_calls\":" << reply.decode_forward_calls()
-                  << ",\"output_ids\":[";
+        // 8. 打印标准的 JSON 格式输出，方便外部监控或前端解析
+        std::cout << "{" << metrics.str() << ",\"output_ids\":[";
         for (int i = 0; i < reply.tokens_size(); ++i)
             std::cout << (i ? "," : "") << reply.tokens(i);
         std::cout << "],\"finish_reason\":\"" << reply.finish_reason() << "\"}\n";
+        } // for (iteration)
     }
     catch (const std::exception &error)
     {

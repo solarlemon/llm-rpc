@@ -11,6 +11,9 @@ message PrefillReply {
   uint32 request_id = 1;
   bytes snapshot = 2;
   string error = 3;
+  // 服务端分段耗时（微秒），供基准脚本统计
+  uint32 prefill_us = 4;
+  uint32 encode_us = 5;
 }
 
 message DecodeRequest {
@@ -26,6 +29,9 @@ message DecodeReply {
   uint32 prompt_forward_tokens = 4;
   string error = 5;
   uint32 decode_forward_calls = 6;
+  // 服务端分段耗时（微秒）
+  uint32 import_us = 7;
+  uint32 generate_us = 8;
 }
 service PrefillService { rpc RunPrefill(PrefillRequest) returns (PrefillReply); }
 service DecodeService { rpc RunDecode(DecodeRequest) returns (DecodeReply); }

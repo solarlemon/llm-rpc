@@ -15,6 +15,15 @@ namespace
     using namespace llm_rpc;
     using namespace llm_rpc::inference;
 
+    using Clock = std::chrono::steady_clock; // 分段计时统一用单调时钟
+
+    // 把时钟间隔折算成微秒，回传给客户端做分段统计
+    std::uint32_t to_us(Clock::duration span)
+    {
+        return static_cast<std::uint32_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(span).count());
+    }
+
     // 通用工作流包装器：处理互斥、取消（断连/超时）、异常捕获、回调
     template <class Reply, class Work>
     void RunWorker(std::mutex &slot, google::protobuf::RpcController *controller,
@@ -111,12 +120,14 @@ namespace
 
                           // 3. 执行 Prefill 前向传播
                           // chunk_size 传 8：分块预填充，逐 token 写入 KV Cache
+                          const auto prefill_begin = Clock::now();
                           KVCache cache(model_.cache_shape());
                           const auto logits = model_.prefill(prompt, cache, 8, cancelled);
 
                           // 4. 贪心采样出首 Token：
                           // logits 是长度为 vocab 的分布，取概率最高者作为首个生成 token
                           const auto first_token = Model::greedy(logits);
+                          const auto prefill_end = Clock::now();
 
                           // 5. 序列化快照（限制最大包长 rpc_max_frame - 4096）
                           // 6MB 的编码是纯 CPU 工作，客户端断开后没必要白做
@@ -125,6 +136,11 @@ namespace
                           reply->set_snapshot(KVSnapshot::encode(
                               model_, cache, first_token, request->request_id(),
                               rpc_max_frame - 4096, cancelled));
+                          const auto encode_end = Clock::now();
+
+                          // 6. 回传分段耗时：prefill 计算 与 快照编码
+                          reply->set_prefill_us(to_us(prefill_end - prefill_begin));
+                          reply->set_encode_us(to_us(encode_end - prefill_end));
                           reply->set_request_id(request->request_id());
                       });
         }
@@ -148,7 +164,9 @@ namespace
                       [&](const Cancel &cancelled)
                       {
                           // 1. 从 RPC 包里解码出 KV Cache 快照
+                          const auto import_begin = Clock::now();
                           auto state = KVSnapshot::decode(request->snapshot(), model_);
+                          const auto import_end = Clock::now();
 
                           // 2. 校验 Request ID（防止路由错乱）
                           if (state.request_id != request->request_id())
@@ -163,8 +181,10 @@ namespace
                                           request->max_tokens());
 
                           // 4. 开始连续生成（复用 generation.hpp 的 generate 逻辑）
+                          const auto generate_begin = Clock::now();
                           const auto result = generate(model_, *state.cache, state.first_token,
                                                        request->max_tokens(), cancelled);
+                          const auto generate_end = Clock::now();
 
                           // 5. 把生成出来的所有 Token 塞进 Reply 返回
                           for (const auto token : result.tokens)
@@ -172,6 +192,9 @@ namespace
                           reply->set_finish_reason(result.reason);
                           reply->set_decode_forward_calls(result.decode_calls);
                           reply->set_prompt_forward_tokens(0); // Decode 阶段不需要前向 prompt
+                          // 6. 回传分段耗时：快照导入 与 生成
+                          reply->set_import_us(to_us(import_end - import_begin));
+                          reply->set_generate_us(to_us(generate_end - import_end));
                           reply->set_request_id(request->request_id());
                       });
         }
