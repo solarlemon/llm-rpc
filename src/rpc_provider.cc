@@ -135,6 +135,8 @@ namespace llm_rpc
 
         // 断连：置位该连接上所有在飞请求的取消票据。
         // 注意不能读 conn->connected() —— 这版 muduo 的 state_ 不是原子变量。
+        // 建立链接的时候在 conn->setContext() 把一个 ConnectionState 对象绑在了这条 TCP 连接上。
+        // 所以现在可以把这个对象取出来，标记为 closed，并调用 CancelAll() 来取消所有在飞请求。
         const auto *slot =
             boost::any_cast<std::shared_ptr<ConnectionState>>(&conn->getContext());
         if (slot && *slot)
