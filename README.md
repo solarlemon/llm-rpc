@@ -9,7 +9,7 @@ LLM-RPC 是一个 C++14 CPU 推理与 RPC 学习项目，支持 **Qwen2.5-0.5B-I
 | 正确性 | 与官方 transformers 对照：分词与 chat 模板 35/35 一致，logits 最大绝对误差 5.8e-5（相对 2.7e-6），greedy 16/16 逐 token 一致 | [参考校验](docs/reference-check.md) |
 | 分离推理 | Decode 侧 prompt 前向量为 0；单进程 / P-D 冷 / P-D 热三种模式输出逐 token 相同；单 token KV 24 KB，64 token 快照 1.5 MB | [推理基准](docs/benchmark.md) |
 | 可靠性 | 客户端断连由每层推理检查点感知，取消发现延迟 0–28 ms，推理槽位毫秒级释放 | [取消传播](docs/cancel-propagation.md) |
-| 性能 | P/D 交接 25 ms，占端到端 0.17%；decode 4.4 tok/s，受内存带宽约束（约 8.7 GB/s） | [推理基准](docs/benchmark.md) |
+| 性能 | P/D 回包 25 ms、完整交接约 40 ms，占端到端 0.17%–0.28%；decode 4.4 tok/s，受内存带宽约束（约 8.7 GB/s） | [推理基准](docs/benchmark.md) |
 
 实测环境为 WSL2 + Qwen2.5-0.5B-Instruct（FP32 CPU）、单推理槽位；上表数字均可由 `scripts/bench.sh`、`scripts/cancel_demo.sh`、`scripts/ref_check.py` 复现。
 
