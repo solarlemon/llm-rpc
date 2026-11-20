@@ -219,13 +219,16 @@ int main(int argc, char **argv)
 
         RpcProvider provider;
         if (role == "prefill")
+            //  读取 PrefillWorker 的 ServiceDescriptor，建立 service_map（保存服务名和方法描述符）。
+            //  此时服务只在本地内存里
             provider.NotifyService(new PrefillWorker(argv[2]));
         else if (role == "decode")
             provider.NotifyService(new DecodeWorker(argv[2]));
         else
             throw std::invalid_argument("unknown inference worker role");
 
-        // 启动 RPC 服务，设置 2 个 IO 线程
+        // 启动 muduo 的 TcpServer 监听端口。创建 ZkClient 并连接 ZK，然后遍历刚才的 service_map，把服务注册到 ZK 上。
+        // 对于大模型推理，留 2 个线程刚好能保证计算和序列化并行（一个在算，另一个在打包发送）。
         provider.Run(2);
     }
     catch (const std::exception &error)
