@@ -136,7 +136,7 @@ namespace llm_rpc
             // fetch_add 返回旧值：旧值 < 上限 才算抢到名额
             if (bucket->active_count.fetch_add(1) < m_max_conn_per_node)
             {
-                fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+                fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0); // 创建非阻塞 Socket
                 if (fd >= 0)
                 {
                     // 设置 TCP_NODELAY 禁用 Nagle 算法，减少延迟
@@ -150,10 +150,11 @@ namespace llm_rpc
                         const int result = connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address));
                         if (result == 0)
                             return fd;
-                        if (errno == EINPROGRESS && WaitSocket(fd, POLLOUT, deadline))
+                        if (errno == EINPROGRESS && WaitSocket(fd, POLLOUT, deadline)) // 正在握手，等待 POLLOUT
                         {
                             int error = 0;
                             socklen_t length = sizeof(error);
+                            // 非阻塞建连的标准收尾动作。检查底层 socket 是否真的连上了，还是报错了
                             if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0)
                                 return fd;
                         }
@@ -194,6 +195,7 @@ namespace llm_rpc
         if (is_bad)
         {
             // 坏连接：协议状态可能已错乱（半包、脏数据），不能复用
+            // 直接关闭文件描述符，内核回收资源
             close(fd);
             bucket->active_count.fetch_sub(1); // 名额释放
         }
