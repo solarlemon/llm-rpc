@@ -267,6 +267,8 @@ namespace llm_rpc
 
     uint32_t ConsistentHash::hash_func(const std::string &data)
     {
+        // 把任意长度的字符串（虚拟节点：192.168.1.1:8080#0），转换成一个 32 位的无符号整数（uint32_t）
+        // 这个整数，就是该字符串在“哈希环”上的落点坐标。
         uint32_t crc = 0xFFFFFFFF;
         for (size_t i = 0; i < data.length(); ++i)
         {
@@ -349,9 +351,9 @@ namespace llm_rpc
         // 1. 加锁，确保修改期间没有人能读取环
         std::unique_lock<std::shared_timed_mutex> lock(m_rw_mtx);
         // 2. 清空旧数据
-        m_keys.clear();
-        m_ring.clear();
-        m_node_replicas.clear();
+        m_keys.clear();          // 清空有序哈希数组（用于二分查找）
+        m_ring.clear();          // 清空哈希值到真实节点的映射
+        m_node_replicas.clear(); // 清空节点对应的虚拟节点数
 
         // 重点：全量更新时，旧的统计数据已经没有意义了，必须清空
         m_node_counts.clear();
