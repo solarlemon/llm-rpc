@@ -133,6 +133,7 @@ namespace llm_rpc
         // ---- 2. 优先从无锁队列取（预热过的连接直接命中，最快路径）----
         if (bucket->free_fds->pop(fd))
         {
+            // pop 成功，说明有空闲连接，直接返回 pop() 得到的 fd
             return fd; // ★ 高频路径：零锁、无系统调用
         }
 
