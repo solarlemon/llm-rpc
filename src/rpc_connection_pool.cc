@@ -110,15 +110,20 @@ namespace llm_rpc
         ConnectionBucket *bucket = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_global_mtx);
-            auto it = m_pools.find(key); // 查找是否已有该地址的 bucket
+            // map中查找是否已有该地址的 bucket，
+            auto it = m_pools.find(key); // find() 函数会返回一个迭代器（iterator，类似于指针），变量名为 it
+            // 如果找到了：it 会指向那个具体的键值对。
+            // 如果没找到：find() 不会返回空指针（nullptr），而是返回一个特殊的迭代器——m_pools.end()。
             if (it == m_pools.end())
             {
-                // 首次访问该地址，懒创建 bucket
+                // 首次访问该地址 IP:Port，懒创建 bucket
                 bucket = new ConnectionBucket(MAX_CONN_SIZE);
+                // 需要当场创建一个新的连接桶（Bucket），并放入 map 中
                 m_pools[key] = bucket;
             }
             else
             {
+                // 找到了，直接把这个桶的指针拿出来
                 bucket = it->second;
             }
         }
