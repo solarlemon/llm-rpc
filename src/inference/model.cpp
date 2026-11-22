@@ -97,7 +97,7 @@ namespace llm_rpc
             if (!input)
                 throw std::runtime_error("cannot open mini checkpoint");
             const std::streamoff bytes = input.tellg();
-            // 至少 28 字节头；上限 256MB；浮点区必须 4 字节对齐
+            // 至少 28 字节头（因为必须包含 7 个 int32）；上限 256MB；浮点区必须 4 字节对齐
             if (bytes < 28 || bytes > 256 * 1024 * 1024 || (bytes - 28) % 4 != 0)
                 throw std::runtime_error("invalid mini checkpoint byte size");
 
@@ -109,6 +109,7 @@ namespace llm_rpc
                 throw std::runtime_error("invalid mini header");
 
             // header[5] 符号编码：>0 共享 classifier/embedding，<0 不共享
+            // 在 Qwen 共享词嵌入的配置下，输入嵌入矩阵和输出分类器矩阵在物理上是同一份参数。这样可以减少参数量。
             const bool shared = header[5] > 0;
             config_ = {header[0], header[1], header[2], header[3], header[4],
                        std::abs(header[5]), header[6]};
@@ -132,6 +133,7 @@ namespace llm_rpc
                 throw std::runtime_error("nonfinite mini weights");
 
             // Hash the exact checkpoint bytes used to construct this model.
+            // FNV-1a 哈希算法，对整个权重文件（包括 28 字节头和所有的浮点数）计算一个 64 位的哈希值。
             fingerprint_ = 14695981039346656037ULL;
             const auto hash_bytes = [this](const void *buffer, std::size_t size)
             {
@@ -145,7 +147,7 @@ namespace llm_rpc
             hash_bytes(header, sizeof(header));
             hash_bytes(data.data(), data.size() * sizeof(float));
 
-            // 按固定顺序切张量
+            // 按固定顺序切张量的函数
             std::size_t offset = 0;
             auto take = [&](std::size_t count)
             {
@@ -158,10 +160,10 @@ namespace llm_rpc
             const std::size_t d = c.dim, h = c.hidden_dim,
                               kd = d * c.kv_heads / c.heads;
 
-            embedding_ = take(static_cast<std::size_t>(c.vocab) * d);
+            embedding_ = take(static_cast<std::size_t>(c.vocab) * d); // 切分出 embedding
             layers_.resize(c.layers);
             for (auto &l : layers_)
-                l.attention_norm = take(d);
+                l.attention_norm = take(d); // 把所有层的 attention_norm 连续切出来
             for (auto &l : layers_)
                 l.q = take(d * d);
             for (auto &l : layers_)
