@@ -33,7 +33,7 @@ namespace llm_rpc
         }
     }
 
-    // 【新增核心功能】：预热连接
+    // 【新增核心功能】：预热连接（暂时只在压测登录时使用）
     void RpcConnectionPool::WarmUp(const std::string &ip, uint16_t port, int count)
     {
         std::string key = ip + ":" + std::to_string(port);
@@ -110,10 +110,11 @@ namespace llm_rpc
         ConnectionBucket *bucket = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_global_mtx);
-            auto it = m_pools.find(key);
+            auto it = m_pools.find(key); // 查找是否已有该地址的 bucket
             if (it == m_pools.end())
             {
-                bucket = new ConnectionBucket(MAX_CONN_SIZE); // 首次访问，懒创建
+                // 首次访问该地址，懒创建 bucket
+                bucket = new ConnectionBucket(MAX_CONN_SIZE);
                 m_pools[key] = bucket;
             }
             else
@@ -147,6 +148,7 @@ namespace llm_rpc
                     address.sin_port = htons(port);
                     if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) == 1)
                     {
+                        // 发起请求后立刻返回 -1，用 poll 等待 TCP 三次握手完成，全程受 deadline 约束，超时立刻放弃。
                         const int result = connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address));
                         if (result == 0)
                             return fd;
