@@ -266,6 +266,8 @@ namespace llm_rpc
                         {
                             float dot = 0;
                             for (int i = 0; i < head_dim; ++i)
+                                // q[head * head_dim + i] 是当前 token 的 Q
+                                // cache.key(layer, t, kv_head, i) 是历史 token t 的 K 
                                 dot += q[head * head_dim + i] * cache.key(layer, t, kv_head, i);
                             scores[t] = dot / std::sqrt(static_cast<float>(head_dim));
                         }
