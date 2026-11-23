@@ -67,12 +67,16 @@ namespace llm_rpc
 
             // 5. 位置固定为当前 token 的 valid_len_，写入 K 与 V，并打标记
             const auto offset = layer * layer_stride_ + valid_len_ * layer_width_;
+
+            // 极速内存拷贝，并打上“该层已写”的标记
             std::copy(key.begin(), key.end(), keys_.begin() + offset);
             std::copy(value.begin(), value.end(), values_.begin() + offset);
             written_[layer] = 1;
         }
 
         // ---------- 读取入口：边界 + 可读性校验，返回扁平下标 ----------
+        // 把 (layer, position, head, component) 这四个逻辑坐标，映射成底层一维数组的真实偏移量
+        // 因为CPU/GPU 的内存模型本身是一维线性地址空间，所以任何多维逻辑结构，最终都必须被编码成一维偏移量，硬件才能通过一次地址计算去访存。
         std::size_t KVCache::readable_index(std::size_t layer, std::size_t position,
                                             std::size_t head, std::size_t component) const
         {
