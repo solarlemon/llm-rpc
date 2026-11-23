@@ -57,7 +57,8 @@ namespace llm_rpc
             }
         }
 
-        // 核心写入逻辑：把内存中的 KVCache 拍平写入流
+        // 核心写入逻辑：把内存中的 KVCache 拍平写入流，并添加头部信息，以供 RPC 传输或本地保存。
+        // 写入前会做防御性校验，确保 Cache 与模型匹配。
         void KVSnapshot::write(std::ostream &out, const Model &model, const KVCache &cache,
                                TokenId first_token, std::uint32_t request_id,
                                const Cancel &cancel)
@@ -83,7 +84,7 @@ namespace llm_rpc
                                      static_cast<std::uint32_t>(shape.kv_heads), static_cast<std::uint32_t>(shape.head_dim),
                                      static_cast<std::uint32_t>(positions), static_cast<std::uint32_t>(positions),
                                      static_cast<std::uint32_t>(first_token), request_id})
-                put(out, field);
+                put(out, field); // 维度与元数据
             put(out, model.fingerprint(), 8); // 写入模型指纹（防止模型不匹配）
             put(out, cache.valid_bytes(), 8); // 写入有效数据长度
 
@@ -100,9 +101,10 @@ namespace llm_rpc
                         const float value = (*buffer)[layer * cache.layer_stride_ + index];
                         if (!std::isfinite(value)) // 防止 NaN 或 Inf 污染
                             throw std::runtime_error("nonfinite KV value");
+                        // 将 float 转为 uint32_t 位模式（IEEE754），再写入流
                         std::uint32_t bits;
                         std::memcpy(&bits, &value, sizeof(bits)); // 按照 IEEE754 提取浮点位
-                        put(out, bits);
+                        put(out, bits); // 小端序写入 4 字节
                     }
             }
         }
