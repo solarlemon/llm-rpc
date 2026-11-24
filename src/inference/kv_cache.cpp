@@ -74,6 +74,28 @@ namespace llm_rpc
             written_[layer] = 1;
         }
 
+        void KVCache::append_block(const std::vector<std::vector<float>> &keys,
+                                   const std::vector<std::vector<float>> &values,
+                                   std::size_t count)
+        {
+            if (!count || count > shape_.capacity - valid_len_ ||
+                keys.size() != shape_.layers || values.size() != shape_.layers ||
+                std::find(written_.begin(), written_.end(), 1) != written_.end())
+                throw std::invalid_argument("invalid KV block");
+            for (std::size_t layer = 0; layer < shape_.layers; ++layer)
+                if (keys[layer].size() != count * layer_width_ ||
+                    values[layer].size() != count * layer_width_)
+                    throw std::invalid_argument("invalid KV block payload");
+
+            for (std::size_t layer = 0; layer < shape_.layers; ++layer)
+            {
+                const auto offset = layer * layer_stride_ + valid_len_ * layer_width_;
+                std::copy(keys[layer].begin(), keys[layer].end(), keys_.begin() + offset);
+                std::copy(values[layer].begin(), values[layer].end(), values_.begin() + offset);
+            }
+            valid_len_ += count;
+        }
+
         // ---------- 读取入口：边界 + 可读性校验，返回扁平下标 ----------
         // 把 (layer, position, head, component) 这四个逻辑坐标，映射成底层一维数组的真实偏移量
         // 因为CPU/GPU 的内存模型本身是一维线性地址空间，所以任何多维逻辑结构，最终都必须被编码成一维偏移量，硬件才能通过一次地址计算去访存。
