@@ -41,12 +41,12 @@ namespace llm_rpc
                              const std::vector<float> &value);
 
             // 批量 Prefill：一次提交多个位置的所有层 K/V，输入按 [layer][token][kv_head][dim] 排列。
-        // 调用前必须完成整个块的计算；失败时不改变已提交前缀。
-        void append_block(const std::vector<std::vector<float>> &keys,
-                          const std::vector<std::vector<float>> &values,
-                          std::size_t count);
+            // 调用前必须完成整个块的计算；失败时不改变已提交前缀。
+            void append_block(const std::vector<std::vector<float>> &keys,
+                              const std::vector<std::vector<float>> &values,
+                              std::size_t count);
 
-        // ---------- 读取（attention 用） ----------
+            // ---------- 读取（attention 用） ----------
             // 通过 readable_index 做边界 + 可读性检查后取值；
             // 检查可阻止读取未写入或旧请求残留的数据。
             float key(std::size_t layer, std::size_t position,
