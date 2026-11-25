@@ -56,8 +56,8 @@ namespace llm_rpc
             // 由 Config 推导 KVShape{layers, capacity, kv_heads, dim/heads}
             KVShape cache_shape() const noexcept;
 
-            // 预填充：处理整个 prompt（ids），按 chunk_size 分块前向整个 prompt，
-            // 逐 token 写入 cache，返回最后位置的 logits。
+            // 预填充：每块对多个 token 执行权重矩阵乘法和因果注意力，
+            // 整块完成后提交 KV，返回最后位置的 logits。
             Logits prefill(const std::vector<TokenId> &ids, KVCache &cache,
                            std::size_t chunk_size = 8, const Cancel &cancel = {}) const;
 
