@@ -38,6 +38,49 @@ namespace llm_rpc
                 return out;
             }
 
+            // 输入按 [token][input_dim] 排列，权重按 [output_dim][input_dim] 排列。
+            // 同一权重元素连续用于块内所有 token，避免每个 token 重新遍历整份权重。
+            std::vector<float> matmul_block(const std::vector<float> &w,
+                                            const std::vector<float> &x,
+                                            std::size_t batch, std::size_t input_dim,
+                                            int output_dim, const Cancel &cancel)
+            {
+                std::vector<float> out(batch * static_cast<std::size_t>(output_dim), 0.0f);
+                for (int row = 0; row < output_dim; ++row)
+                {
+                    if ((row & 63) == 0)
+                        check_cancel(cancel);
+                    for (std::size_t col = 0; col < input_dim; ++col)
+                    {
+                        const float weight = w[static_cast<std::size_t>(row) * input_dim + col];
+                        for (std::size_t token = 0; token < batch; ++token)
+                            out[token * output_dim + row] +=
+                                weight * x[token * input_dim + col];
+                    }
+                }
+                return out;
+            }
+
+            // 每个 token 独立 RMSNorm，仍保持 token-major 排列。
+            std::vector<float> norm_block(const std::vector<float> &x,
+                                          const std::vector<float> &weight, float epsilon)
+            {
+                const auto width = weight.size();
+                std::vector<float> out(x.size());
+                for (std::size_t token = 0; token < x.size() / width; ++token)
+                {
+                    const auto offset = token * width;
+                    float sum = 0;
+                    for (std::size_t i = 0; i < width; ++i)
+                        sum += x[offset + i] * x[offset + i];
+                    const float scale =
+                        1.0f / std::sqrt(sum / static_cast<float>(width) + epsilon);
+                    for (std::size_t i = 0; i < width; ++i)
+                        out[offset + i] = x[offset + i] * scale * weight[i];
+                }
+                return out;
+            }
+
             // RMSNorm：x * (1/sqrt(mean(x²)+eps)) * weight
             std::vector<float> norm(const std::vector<float> &x, const std::vector<float> &weight, float epsilon)
             {
@@ -267,7 +310,7 @@ namespace llm_rpc
                             float dot = 0;
                             for (int i = 0; i < head_dim; ++i)
                                 // q[head * head_dim + i] 是当前 token 的 Q
-                                // cache.key(layer, t, kv_head, i) 是历史 token t 的 K 
+                                // cache.key(layer, t, kv_head, i) 是历史 token t 的 K
                                 dot += q[head * head_dim + i] * cache.key(layer, t, kv_head, i);
                             scores[t] = dot / std::sqrt(static_cast<float>(head_dim));
                         }
@@ -314,12 +357,11 @@ namespace llm_rpc
             }
         }
 
-        // ---------- 预填充：逐 token 前向整个 prompt ----------
+        // ---------- 块级预填充：权重对多个 token 复用，注意力保持因果掩码 ----------
         Logits Model::prefill(const std::vector<TokenId> &ids, KVCache &cache,
                               std::size_t chunk_size, const Cancel &cancel) const
         {
             validate_cache(cache);
-            // 只能在空 cache 上 prefill，且输入非空、chunk_size > 0
             if (ids.empty() || chunk_size == 0 || cache.valid_len() != 0)
                 throw std::invalid_argument(
                     "prefill requires nonempty input, positive chunk and empty cache");
@@ -329,15 +371,139 @@ namespace llm_rpc
                 if (id < 0 || id >= config_.vocab)
                     throw std::out_of_range("mini token out of range");
 
+            const auto dim = static_cast<std::size_t>(config_.dim);
+            const auto head_dim = config_.dim / config_.heads;
+            const auto kv_dim = static_cast<std::size_t>(head_dim * config_.kv_heads);
+            const auto sharing = config_.heads / config_.kv_heads;
+            const float epsilon = qwen_ ? 1e-6f : 1e-5f;
             Logits logits;
-            for (std::size_t offset = 0; offset < ids.size();)
+            try
             {
-                const auto count = std::min(chunk_size, ids.size() - offset);
-                for (std::size_t i = 0; i < count; ++i)
-                    logits = forward_token(ids[offset + i], cache, cancel);
-                offset += count;
+                for (std::size_t offset = 0; offset < ids.size();)
+                {
+                    const auto count = std::min(chunk_size, ids.size() - offset);
+                    const auto base = cache.valid_len();
+                    std::vector<float> x(count * dim);
+                    for (std::size_t token = 0; token < count; ++token)
+                        std::copy_n(embedding_.begin() + ids[offset + token] * dim, dim,
+                                    x.begin() + token * dim);
+
+                    std::vector<std::vector<float>> block_keys, block_values;
+                    block_keys.reserve(layers_.size());
+                    block_values.reserve(layers_.size());
+                    for (std::size_t layer = 0; layer < layers_.size(); ++layer)
+                    {
+                        check_cancel(cancel);
+                        const auto &weights = layers_[layer];
+                        auto normalized = norm_block(x, weights.attention_norm, epsilon);
+                        auto q = matmul_block(weights.q, normalized, count, dim,
+                                              config_.dim, cancel);
+                        auto k = matmul_block(weights.k, normalized, count, dim,
+                                              static_cast<int>(kv_dim), cancel);
+                        auto v = matmul_block(weights.v, normalized, count, dim,
+                                              static_cast<int>(kv_dim), cancel);
+
+                        for (std::size_t token = 0; token < count; ++token)
+                        {
+                            const auto q_offset = token * dim;
+                            const auto kv_offset = token * kv_dim;
+                            if (qwen_)
+                            {
+                                for (std::size_t i = 0; i < dim; ++i)
+                                    q[q_offset + i] += weights.q_bias[i];
+                                for (std::size_t i = 0; i < kv_dim; ++i)
+                                {
+                                    k[kv_offset + i] += weights.k_bias[i];
+                                    v[kv_offset + i] += weights.v_bias[i];
+                                }
+                            }
+                            std::vector<float> q_token(q.begin() + q_offset,
+                                                       q.begin() + q_offset + dim);
+                            std::vector<float> k_token(k.begin() + kv_offset,
+                                                       k.begin() + kv_offset + kv_dim);
+                            rope(q_token, base + token, head_dim, qwen_);
+                            rope(k_token, base + token, head_dim, qwen_);
+                            std::copy(q_token.begin(), q_token.end(), q.begin() + q_offset);
+                            std::copy(k_token.begin(), k_token.end(), k.begin() + kv_offset);
+                        }
+
+                        std::vector<float> attention(count * dim, 0.0f);
+                        for (std::size_t token = 0; token < count; ++token)
+                        {
+                            check_cancel(cancel);
+                            const auto position = base + token;
+                            for (int head = 0; head < config_.heads; ++head)
+                            {
+                                const auto kv_head = head / sharing;
+                                std::vector<float> scores(position + 1);
+                                for (std::size_t past = 0; past <= position; ++past)
+                                {
+                                    float dot = 0;
+                                    for (int i = 0; i < head_dim; ++i)
+                                    {
+                                        const float key = past < base
+                                                              ? cache.key(layer, past, kv_head, i)
+                                                              : k[(past - base) * kv_dim + kv_head * head_dim + i];
+                                        dot += q[token * dim + head * head_dim + i] * key;
+                                    }
+                                    scores[past] = dot / std::sqrt(static_cast<float>(head_dim));
+                                }
+                                const float maximum =
+                                    *std::max_element(scores.begin(), scores.end());
+                                float sum = 0;
+                                for (auto &score : scores)
+                                {
+                                    score = std::exp(score - maximum);
+                                    sum += score;
+                                }
+                                for (auto &score : scores)
+                                    score /= sum;
+                                for (std::size_t past = 0; past <= position; ++past)
+                                    for (int i = 0; i < head_dim; ++i)
+                                    {
+                                        const float value = past < base
+                                                                ? cache.value(layer, past, kv_head, i)
+                                                                : v[(past - base) * kv_dim + kv_head * head_dim + i];
+                                        attention[token * dim + head * head_dim + i] +=
+                                            scores[past] * value;
+                                    }
+                            }
+                        }
+
+                        residual(x, matmul_block(weights.projection, attention, count,
+                                                 dim, config_.dim, cancel));
+                        normalized = norm_block(x, weights.ffn_norm, epsilon);
+                        auto gate = matmul_block(weights.gate, normalized, count, dim,
+                                                 config_.hidden_dim, cancel);
+                        const auto up = matmul_block(weights.up, normalized, count, dim,
+                                                     config_.hidden_dim, cancel);
+                        for (std::size_t i = 0; i < gate.size(); ++i)
+                            gate[i] = (gate[i] / (1.0f + std::exp(-gate[i]))) * up[i];
+                        residual(x, matmul_block(weights.down, gate, count,
+                                                 static_cast<std::size_t>(config_.hidden_dim),
+                                                 config_.dim, cancel));
+                        block_keys.push_back(std::move(k));
+                        block_values.push_back(std::move(v));
+                    }
+
+                    // 只有整个 prompt 的最后一个位置需要词表投影。
+                    if (offset + count == ids.size())
+                    {
+                        const std::vector<float> last(x.end() - dim, x.end());
+                        logits = matvec(classifier_.empty() ? embedding_ : classifier_,
+                                        norm(last, final_norm_, epsilon), config_.vocab);
+                        check_cancel(cancel);
+                    }
+                    cache.append_block(block_keys, block_values, count);
+                    offset += count;
+                }
+                return logits;
             }
-            return logits; // 最后一个 token 的 logits
+            catch (...)
+            {
+                cache.reset();
+                throw;
+            }
         }
 
         // ---------- 单步解码：要求已有前缀 ----------
