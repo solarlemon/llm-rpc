@@ -45,6 +45,8 @@ namespace llm_rpc
                                             std::size_t batch, std::size_t input_dim,
                                             int output_dim, const Cancel &cancel)
             {
+                // 底层实际上是计算 [count * dim] × [dim * rows]
+                // 权重 w 只从内存读一次，全喂给这 4 个词，四个词表示 count = 4
                 std::vector<float> out(batch * static_cast<std::size_t>(output_dim), 0.0f);
                 for (int row = 0; row < output_dim; ++row)
                 {
@@ -417,8 +419,10 @@ namespace llm_rpc
                                     v[kv_offset + i] += weights.v_bias[i];
                                 }
                             }
+                            // 把第 token 个词的 q 单独切出来 (dim 维)
                             std::vector<float> q_token(q.begin() + q_offset,
                                                        q.begin() + q_offset + dim);
+                            // 把第 token 个词的 q 单独切出来 (dim 维)
                             std::vector<float> k_token(k.begin() + kv_offset,
                                                        k.begin() + kv_offset + kv_dim);
                             rope(q_token, base + token, head_dim, qwen_);
@@ -441,6 +445,8 @@ namespace llm_rpc
                                     float dot = 0;
                                     for (int i = 0; i < head_dim; ++i)
                                     {
+                                        // 如果 past（历史位置）小于 base（当前批次起始位置），说明是以前算过的历史词，从 Cache 读。
+                                        // 否则，说明是当前批次内部的相互注意力，直接从当前批次算出来的临时变量 k 和 v 里拿。
                                         const float key = past < base
                                                               ? cache.key(layer, past, kv_head, i)
                                                               : k[(past - base) * kv_dim + kv_head * head_dim + i];

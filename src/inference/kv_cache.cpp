@@ -78,21 +78,32 @@ namespace llm_rpc
                                    const std::vector<std::vector<float>> &values,
                                    std::size_t count)
         {
+            //  1. 前置防御与状态校验
             if (!count || count > shape_.capacity - valid_len_ ||
                 keys.size() != shape_.layers || values.size() != shape_.layers ||
                 std::find(written_.begin(), written_.end(), 1) != written_.end())
                 throw std::invalid_argument("invalid KV block");
+
+            // 2. 载荷大小校验
+            // 每一层传进来的 K/V 数组大小，必须严格等于 count * 每层宽度
             for (std::size_t layer = 0; layer < shape_.layers; ++layer)
                 if (keys[layer].size() != count * layer_width_ ||
                     values[layer].size() != count * layer_width_)
                     throw std::invalid_argument("invalid KV block payload");
 
+            // 3. 批量内存拷贝
             for (std::size_t layer = 0; layer < shape_.layers; ++layer)
             {
+                // 计算当前层、当前有效长度对应的物理偏移量
                 const auto offset = layer * layer_stride_ + valid_len_ * layer_width_;
+
+                // 一次性把 count 个词的 K/V 连续拷贝进缓存
                 std::copy(keys[layer].begin(), keys[layer].end(), keys_.begin() + offset);
                 std::copy(values[layer].begin(), values[layer].end(), values_.begin() + offset);
             }
+
+            // 4. 推进有效长度
+            // 批量写入一次性成功，直接推进 valid_len_，这批词正式成为历史
             valid_len_ += count;
         }
 
