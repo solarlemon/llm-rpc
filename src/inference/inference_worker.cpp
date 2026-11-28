@@ -119,7 +119,7 @@ namespace
                                                             request->prompt().end());
 
                           // 3. 执行 Prefill 前向传播
-                          // chunk_size 传 8：分块预填充，逐 token 写入 KV Cache
+                          // chunk_size 传 8：块级计算，整块所有层完成后提交 KV Cache
                           const auto prefill_begin = Clock::now();
                           KVCache cache(model_.cache_shape());
                           const auto logits = model_.prefill(prompt, cache, 8, cancelled);
