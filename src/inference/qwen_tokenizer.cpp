@@ -21,7 +21,7 @@ namespace llm_rpc
         constexpr char system_prompt[] = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
 
         // 读 JSON 文件
-        Json load_json(const std::string &file) { ... }
+        Json load_json(const std::string &file) { std::ifstream input(file); if (!input) throw std::runtime_error("cannot open tokenizer JSON: " + file); return Json::parse(input); }
 
         // ICU 错误检查（U_FAILURE 是 ICU 提供的宏）
         void check_icu(UErrorCode status)
